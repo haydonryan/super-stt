@@ -27,8 +27,15 @@ pub fn page<'a>(
     };
 
     // Audio level display widget
+    let record_button = match recording_status {
+        RecordingStatus::Recording => button::standard("Recording"), // Disabled button when recording
+        RecordingStatus::Idle => {
+            button::standard("Test Recording").on_press(Message::StartRecording)
+        }
+    };
+
     let audio_widget = row![
-        button::standard("Test Recording").on_press(Message::StartRecording),
+        record_button,
         widget::progress_bar(
             0.0..=1.0,
             // Audio level can be a minimum of 0.1 when recording because lower than that and it can overflow when theme is fully rounded.

@@ -518,6 +518,11 @@ impl cosmic::Application for AppModel {
 
             // Super STT specific messages
             Message::StartRecording => {
+                // Prevent starting recording if already recording
+                if matches!(self.recording_status, RecordingStatus::Recording) {
+                    return Task::none();
+                }
+
                 self.recording_status = RecordingStatus::Recording;
                 return Task::perform(send_record_command(self.socket_path.clone()), |result| {
                     match result {
@@ -533,11 +538,13 @@ impl cosmic::Application for AppModel {
 
             Message::StopRecording => {
                 self.recording_status = RecordingStatus::Idle;
+                self.audio_level = 0.0;
             }
 
             Message::TranscriptionReceived(text) => {
                 self.transcription_text = text;
                 self.recording_status = RecordingStatus::Idle;
+                self.audio_level = 0.0;
             }
 
             Message::AudioLevelUpdate { level, is_speech } => {

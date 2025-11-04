@@ -249,8 +249,6 @@ fn model_selection_settings_widget<'a>(
             // Add warning message based on available devices and current state
             let warning_message = if available_devices.len() == 1 && available_devices[0] == "CPU" {
                 "Note: This build does not include GPU support"
-            } else if current_device == "cpu" && available_devices.contains(&"GPU".to_string()) {
-                "Note: GPU acceleration may be unavailable - check CUDA installation"
             } else {
                 "Note: GPU will fallback to CPU if unavailable or insufficient memory"
             };
