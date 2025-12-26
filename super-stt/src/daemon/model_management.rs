@@ -28,22 +28,28 @@ impl SuperSTTDaemon {
 
         info!("Loading model with target device: {target_device}");
 
+        // Broadcast model loading status for device switch
+        self.broadcast_device_model_loading_status(*stt_model, target_device)
+            .await;
+
         // Load model in a single blocking task with cancellation support
-        let load_handle = tokio::task::spawn_blocking(move || {
+        let mut load_handle = tokio::task::spawn_blocking(move || {
             Self::load_model_sync(stt_model_copy, &target_device_copy)
         });
 
         // Wait for either model loading completion, shutdown signal, or timeout (60 seconds)
         let model_result = tokio::select! {
-            result = load_handle => {
+            result = &mut load_handle => {
                 result.map_err(|e| anyhow::anyhow!("Model loading task failed: {}", e))?
             }
             _ = shutdown_rx.recv() => {
-                warn!("Model loading cancelled due to shutdown");
+                warn!("Model loading cancelled due to shutdown - aborting blocking task");
+                load_handle.abort();
                 return Err(anyhow::anyhow!("Model loading cancelled due to shutdown"));
             }
             () = tokio::time::sleep(tokio::time::Duration::from_secs(60)) => {
-                error!("Model loading timed out after 60 seconds");
+                error!("Model loading timed out after 60 seconds - aborting blocking task");
+                load_handle.abort();
                 return Err(anyhow::anyhow!("Model loading timed out"));
             }
         }?;
@@ -182,6 +188,30 @@ impl SuperSTTDaemon {
             .await
         {
             warn!("Failed to broadcast model loading status: {e}");
+        }
+    }
+
+    /// Broadcast model loading status specifically for device switching
+    pub async fn broadcast_device_model_loading_status(
+        &self,
+        model: STTModel,
+        target_device: &str,
+    ) {
+        if let Err(e) = self
+            .notification_manager
+            .broadcast_event(
+                "daemon_status_changed".to_string(),
+                "daemon".to_string(),
+                serde_json::json!({
+                    "status": "loading_model_for_device",
+                    "model": model.to_string(),
+                    "target_device": target_device,
+                    "timestamp": Utc::now().to_rfc3339()
+                }),
+            )
+            .await
+        {
+            warn!("Failed to broadcast device model loading status: {e}");
         }
     }
 
@@ -346,7 +376,7 @@ impl SuperSTTDaemon {
                 serde_json::json!({
                     "status": "model_switched",
                     "model_type": model_name.to_lowercase(),
-                    "model_name": model,
+                    "model_name": model.to_string(),
                     "timestamp": Utc::now().to_rfc3339()
                 }),
             )

@@ -31,6 +31,8 @@ pub enum Message {
     UdpDataReceived(Vec<u8>),
     RetryConnection,
     PingTimeout,
+    DaemonEventsReceived(Vec<super_stt_shared::models::protocol::NotificationEvent>), // Received events
+    DaemonEventsError(String), // Error receiving or parsing events
     RecordingStateChanged(crate::state::RecordingStatus),
     AudioLevelUpdate {
         level: f32,
@@ -38,7 +40,7 @@ pub enum Message {
     },
 
     // Model management messages
-    LoadModels,
+    LoadInitialData, // Load models + device info at startup
     ModelSelected(STTModel),
     ModelsLoaded {
         current: STTModel,
