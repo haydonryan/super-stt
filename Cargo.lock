@@ -6272,7 +6272,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "super-stt"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -6314,7 +6314,7 @@ dependencies = [
 
 [[package]]
 name = "super-stt-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -6360,7 +6360,7 @@ dependencies = [
 
 [[package]]
 name = "super-stt-shared"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
