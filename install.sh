@@ -153,7 +153,7 @@ detect_cuda_major_version() {
     echo "12"
 }
 
-# Detect CUDA/cuDNN availability and compute capability
+# Detect CUDA availability and compute capability
 detect_cuda() {
     if command -v nvidia-smi &> /dev/null; then
         print_info "NVIDIA GPU detected" >&2
@@ -178,31 +178,12 @@ detect_cuda() {
             # Detect compute capability
             local compute_cap=$(detect_gpu_compute_cap)
 
-            # Check for cuDNN
-            CUDNN_FOUND=false
-            if [ -f /usr/local/cuda/include/cudnn.h ] || [ -f /usr/include/cudnn.h ] || \
-               [ -f /usr/local/include/cudnn.h ] || ldconfig -p 2>/dev/null | grep -q libcudnn || \
-               find /usr -name "libcudnn.so*" 2>/dev/null | grep -q .; then
-                CUDNN_FOUND=true
-            fi
-
             if [ -n "$compute_cap" ]; then
-                if [ "$CUDNN_FOUND" = true ]; then
-                    print_info "cuDNN found - using cuda${cuda_major}-cudnn-sm${compute_cap} variant" >&2
-                    echo "cuda${cuda_major}-cudnn-sm${compute_cap}"
-                else
-                    print_info "cuDNN not found - using cuda${cuda_major}-sm${compute_cap} variant" >&2
-                    echo "cuda${cuda_major}-sm${compute_cap}"
-                fi
+                print_info "Using cuda${cuda_major}-sm${compute_cap} variant" >&2
+                echo "cuda${cuda_major}-sm${compute_cap}"
             else
-                # Fallback to generic CUDA variants
-                if [ "$CUDNN_FOUND" = true ]; then
-                    print_info "cuDNN found - using generic cuda${cuda_major}-cudnn-sm75 variant" >&2
-                    echo "cuda${cuda_major}-cudnn-sm75"
-                else
-                    print_info "cuDNN not found - using generic cuda${cuda_major}-sm75 variant" >&2
-                    echo "cuda${cuda_major}-sm75"
-                fi
+                print_info "Using generic cuda${cuda_major}-sm75 variant" >&2
+                echo "cuda${cuda_major}-sm75"
             fi
         else
             print_warn "NVIDIA GPU found but CUDA runtime not available - using CPU variant" >&2
@@ -690,14 +671,13 @@ download_with_fallback() {
     fi
 
     # If specific compute capability failed, try fallbacks
-    # Variant format: cuda{12,13}[-cudnn]-sm{75,80,86,89,90,100,120}
-    if [[ "$variant" =~ ^cuda([0-9]+)(-cudnn)?-sm([0-9]+)$ ]]; then
+    # Variant format: cuda{12,13}-sm{75,80,86,89,90,100,120}
+    if [[ "$variant" =~ ^cuda([0-9]+)-sm([0-9]+)$ ]]; then
         local cuda_ver="${BASH_REMATCH[1]}"
-        local cudnn_part="${BASH_REMATCH[2]}"  # Either "-cudnn" or empty
-        local sm_cap="${BASH_REMATCH[3]}"
+        local sm_cap="${BASH_REMATCH[2]}"
 
         # Try fallback to sm75 with same CUDA version
-        local base_variant="cuda${cuda_ver}${cudnn_part}-sm75"
+        local base_variant="cuda${cuda_ver}-sm75"
         if [ "$variant" != "$base_variant" ]; then
             print_warn "Specific compute capability variant not found, trying $base_variant" >&2
             tarball_name="super-stt-${arch}-${base_variant}.tar.gz"
@@ -717,7 +697,7 @@ download_with_fallback() {
             alt_cuda_ver="13"
         fi
 
-        local alt_variant="cuda${alt_cuda_ver}${cudnn_part}-sm75"
+        local alt_variant="cuda${alt_cuda_ver}-sm75"
         print_warn "CUDA $cuda_ver variants not found, trying CUDA $alt_cuda_ver ($alt_variant)" >&2
         tarball_name="super-stt-${arch}-${alt_variant}.tar.gz"
         download_url="https://github.com/$GITHUB_REPO/releases/download/$VERSION/$tarball_name"
@@ -749,12 +729,11 @@ if [ -z "$DOWNLOADED_TARBALL" ]; then
     print_error "Failed to download any compatible variant"
     print_error "Tried URLs:"
     print_error "  - https://github.com/$GITHUB_REPO/releases/download/$VERSION/super-stt-${ARCH}-${VARIANT}.tar.gz"
-    if [[ "$VARIANT" =~ ^cuda([0-9]+)(-cudnn)?-sm([0-9]+)$ ]]; then
+    if [[ "$VARIANT" =~ ^cuda([0-9]+)-sm([0-9]+)$ ]]; then
         err_cuda_ver="${BASH_REMATCH[1]}"
-        err_cudnn_part="${BASH_REMATCH[2]}"
         err_alt_cuda_ver=$([[ "$err_cuda_ver" == "13" ]] && echo "12" || echo "13")
-        print_error "  - https://github.com/$GITHUB_REPO/releases/download/$VERSION/super-stt-${ARCH}-cuda${err_cuda_ver}${err_cudnn_part}-sm75.tar.gz"
-        print_error "  - https://github.com/$GITHUB_REPO/releases/download/$VERSION/super-stt-${ARCH}-cuda${err_alt_cuda_ver}${err_cudnn_part}-sm75.tar.gz"
+        print_error "  - https://github.com/$GITHUB_REPO/releases/download/$VERSION/super-stt-${ARCH}-cuda${err_cuda_ver}-sm75.tar.gz"
+        print_error "  - https://github.com/$GITHUB_REPO/releases/download/$VERSION/super-stt-${ARCH}-cuda${err_alt_cuda_ver}-sm75.tar.gz"
         print_error "  - https://github.com/$GITHUB_REPO/releases/download/$VERSION/super-stt-${ARCH}-cpu.tar.gz"
     fi
     exit 1
