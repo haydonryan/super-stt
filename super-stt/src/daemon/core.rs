@@ -61,9 +61,29 @@ impl SuperSTTDaemon {
                 self.handle_realtime_audio(client_id, audio_data, sample_rate)
                     .await
             }
-            Command::Record { write_mode } => {
+            Command::Record {
+                write_mode,
+                manual_stop,
+            } => {
+                if manual_stop {
+                    // Toggle behaviour: if already recording, stop it and return immediately;
+                    // the first caller will receive the transcription when it finishes.
+                    let is_recording = *self.is_recording.read().await;
+                    if is_recording {
+                        let guard = self.manual_stop_tx.read().await;
+                        if let Some(tx) = guard.as_ref() {
+                            let _ = tx.send(());
+                            log::info!("🛑 Manual stop triggered via second key press");
+                        } else {
+                            log::warn!("Manual stop requested but no stop channel found (recording not ready or already finishing)");
+                        }
+                        return DaemonResponse::success()
+                            .with_message("Recording stop signal sent".to_string());
+                    }
+                }
                 let mut typer = Typer::default();
-                self.handle_record_internal(&mut typer, write_mode).await
+                self.handle_record_internal(&mut typer, write_mode, manual_stop)
+                    .await
             }
             Command::SetAudioTheme { theme } => self.handle_set_audio_theme(theme),
             Command::GetAudioTheme => self.handle_get_audio_theme(),

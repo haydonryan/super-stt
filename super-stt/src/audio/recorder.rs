@@ -129,6 +129,10 @@ impl DaemonAudioRecorder {
         udp_streamer: Arc<UdpAudioStreamer>,
         // Optional channel to forward live mono PCM samples and device sample rate
         preview_tx: Option<tokio::sync::mpsc::UnboundedSender<(Vec<f32>, u32)>>,
+        // When true, disables silence detection (manual-stop mode)
+        manual_mode: bool,
+        // Optional external stop signal (manual-stop or early stop)
+        mut stop_rx: Option<tokio::sync::broadcast::Receiver<()>>,
     ) -> Result<Vec<f32>> {
         info!("🎤 Starting audio recording with streaming...");
 
@@ -155,6 +159,7 @@ impl DaemonAudioRecorder {
             };
             *state = RecordingState::new();
             state.recording_start = Some(Instant::now());
+            state.manual_mode = manual_mode;
         }
 
         // Set up audio stream
@@ -225,7 +230,22 @@ impl DaemonAudioRecorder {
         let mut timeout_occurred = false;
 
         loop {
-            time::sleep(AUDIO_LOOP_INTERVAL).await;
+            // In manual-stop mode, race between the periodic check and the stop signal
+            if let Some(ref mut stop_rx) = stop_rx {
+                tokio::select! {
+                    _ = time::sleep(AUDIO_LOOP_INTERVAL) => {}
+                    _ = stop_rx.recv() => {
+                        if manual_mode {
+                            info!("🛑 Manual stop signal received, ending recording");
+                        } else {
+                            info!("🛑 Stop signal received, ending recording");
+                        }
+                        break;
+                    }
+                }
+            } else {
+                time::sleep(AUDIO_LOOP_INTERVAL).await;
+            }
 
             let should_stop = {
                 let state = match self.recording_state.lock() {
@@ -245,26 +265,29 @@ impl DaemonAudioRecorder {
             }
 
             // Intelligent timeout logic - only timeout if no speech has been detected
-            let elapsed = start_time.elapsed();
-            let has_detected_speech = {
-                let state = match self.recording_state.lock() {
-                    Ok(guard) => guard,
-                    Err(poisoned) => {
-                        log::warn!(
-                            "Recording state lock was poisoned while checking speech detection, attempting recovery"
-                        );
-                        poisoned.into_inner()
-                    }
+            // (not applicable in manual-stop mode)
+            if !manual_mode {
+                let elapsed = start_time.elapsed();
+                let has_detected_speech = {
+                    let state = match self.recording_state.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => {
+                            log::warn!(
+                                "Recording state lock was poisoned while checking speech detection, attempting recovery"
+                            );
+                            poisoned.into_inner()
+                        }
+                    };
+                    state.recording // Check if speech has been detected and recording started
                 };
-                state.recording // Check if speech has been detected and recording started
-            };
 
-            // If speech has been detected, rely on silence detection instead of timeout
-            // Only timeout if no speech has been detected at all
-            if !has_detected_speech && elapsed >= Duration::from_secs(60) {
-                log::warn!("⚠️ Recording timeout: No speech detected within 60 seconds");
-                timeout_occurred = true;
-                break;
+                // If speech has been detected, rely on silence detection instead of timeout
+                // Only timeout if no speech has been detected at all
+                if !has_detected_speech && elapsed >= Duration::from_secs(60) {
+                    log::warn!("⚠️ Recording timeout: No speech detected within 60 seconds");
+                    timeout_occurred = true;
+                    break;
+                }
             }
         }
 

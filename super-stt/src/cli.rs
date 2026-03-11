@@ -51,6 +51,10 @@ pub fn build() -> Command {
                 .action(ArgAction::SetTrue)
             )
             .arg(
+                arg!(-m --"manual-stop" "Stop recording by pressing the shortcut a second time (disables silence detection)")
+                .action(ArgAction::SetTrue)
+            )
+            .arg(
                 arg!(-s --socket <socket> "The daemon socket path")
                 .default_value(*DEFAULT_SOCKET_PATH_STR)
                 .value_parser(value_parser!(PathBuf))

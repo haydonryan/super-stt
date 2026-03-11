@@ -15,7 +15,7 @@ use tokio::time::Instant;
 impl SuperSTTDaemon {
     /// Handle record command - direct recording in daemon (legacy method)
     pub async fn handle_record(&self, typer: &mut Typer, write_mode: bool) -> DaemonResponse {
-        self.handle_record_internal(typer, write_mode).await
+        self.handle_record_internal(typer, write_mode, false).await
     }
 
     /// Internal record handling implementation
@@ -23,6 +23,7 @@ impl SuperSTTDaemon {
         &self,
         typer: &mut Typer,
         write_mode: bool,
+        manual_stop: bool,
     ) -> DaemonResponse {
         // Check if already recording - prevent multiple simultaneous recordings
         {
@@ -36,7 +37,7 @@ impl SuperSTTDaemon {
         }
 
         // Wait for recording to complete and return the transcription
-        match self.record_and_transcribe(typer, write_mode).await {
+        match self.record_and_transcribe(typer, write_mode, manual_stop).await {
             Ok(transcription) => {
                 if transcription.trim().is_empty() {
                     info!("🎤 Recording completed - No speech detected");
@@ -73,11 +74,31 @@ impl SuperSTTDaemon {
         &self,
         typer: &mut Typer,
         write_mode: bool,
+        manual_stop: bool,
     ) -> Result<String> {
         info!("Starting direct audio recording in daemon with simplified architecture");
 
+        // Create a broadcast channel so any recording can be stopped externally.
+        // Manual-stop mode also disables silence detection.
+        let (stop_tx, stop_rx) = tokio::sync::broadcast::channel(1);
+        *self.manual_stop_tx.write().await = Some(stop_tx);
+        if manual_stop {
+            info!("🎛️ Recording mode: manual-stop (silence detection disabled)");
+        } else {
+            info!("🎛️ Recording mode: auto-stop (silence detection enabled)");
+        }
+        if manual_stop {
+            info!("🔴 Manual-stop mode active: press the shortcut again to stop recording");
+        }
+
         // Set up recording state and create recorder
-        let mut recorder = self.setup_recording_session(write_mode).await?;
+        let mut recorder = match self.setup_recording_session(write_mode).await {
+            Ok(recorder) => recorder,
+            Err(e) => {
+                *self.manual_stop_tx.write().await = None;
+                return Err(e);
+            }
+        };
 
         // Get model processing interval from current model type
         let model_processing_interval = {
@@ -103,7 +124,7 @@ impl SuperSTTDaemon {
             let udp_streamer = Arc::clone(&self.udp_streamer);
             async move {
                 recorder
-                    .record_until_silence_with_streaming(udp_streamer, None)
+                    .record_until_silence_with_streaming(udp_streamer, None, manual_stop, Some(stop_rx))
                     .await
             }
         });
@@ -234,7 +255,20 @@ impl SuperSTTDaemon {
         info!("Step 1 complete: Preview has finished");
 
         // Wait for recorder to finish and get full audio data
-        let full_audio_data = recorder_handle.await??;
+        let full_audio_data = match recorder_handle.await {
+            Ok(Ok(data)) => data,
+            Ok(Err(e)) => {
+                *self.manual_stop_tx.write().await = None;
+                return Err(e);
+            }
+            Err(e) => {
+                *self.manual_stop_tx.write().await = None;
+                return Err(anyhow::anyhow!("Recorder task failed: {e}"));
+            }
+        };
+
+        // Clear stop channel now that recording is done
+        *self.manual_stop_tx.write().await = None;
 
         // Clear preview after recording is done (only if preview typing was enabled)
         if write_mode {
@@ -403,7 +437,7 @@ impl SuperSTTDaemon {
     ) -> Result<Vec<f32>> {
         // Legacy method - replaced with simplified architecture
         recorder
-            .record_until_silence_with_streaming(Arc::clone(&self.udp_streamer), None)
+            .record_until_silence_with_streaming(Arc::clone(&self.udp_streamer), None, false, None)
             .await
     }
 

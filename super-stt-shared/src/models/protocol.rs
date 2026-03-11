@@ -341,6 +341,7 @@ pub enum Command {
     },
     Record {
         write_mode: bool,
+        manual_stop: bool,
     },
     SetAudioTheme {
         theme: String,
@@ -567,7 +568,16 @@ fn cmd_record(request: &DaemonRequest) -> Command {
         .and_then(|data| data.get("write_mode"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
-    Command::Record { write_mode }
+    let manual_stop = request
+        .data
+        .as_ref()
+        .and_then(|data| data.get("manual_stop"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Command::Record {
+        write_mode,
+        manual_stop,
+    }
 }
 
 fn cmd_set_audio_theme(request: &DaemonRequest) -> Result<Command, String> {

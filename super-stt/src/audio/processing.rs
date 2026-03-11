@@ -62,7 +62,7 @@ pub fn process_audio_samples(
         true
     };
 
-    if !in_grace_period {
+    if !in_grace_period && !state.manual_mode {
         if state.recording {
             if !is_speech {
                 if state.silence_start.is_none() {

@@ -84,7 +84,8 @@ pub struct SuperSTTDaemon {
     pub resource_manager: Arc<ResourceManager>,
     // Preview typing setting (beta feature)
     pub preview_typing_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    // Mutex to prevent GPU processing during typing operations
+    // Sender used to signal a running recording to stop early (manual-stop or external stop)
+    pub manual_stop_tx: Arc<tokio::sync::RwLock<Option<tokio::sync::broadcast::Sender<()>>>>,
 }
 
 impl SuperSTTDaemon {
@@ -201,6 +202,7 @@ impl SuperSTTDaemon {
             preview_typing_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 preview_typing_enabled,
             )),
+            manual_stop_tx: Arc::new(tokio::sync::RwLock::new(None)),
         };
 
         // Apply temporary device override for current session (not saved to config)
