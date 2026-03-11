@@ -74,7 +74,9 @@ impl SuperSTTDaemon {
                         let _ = tx.send(());
                         log::info!("🛑 Stop triggered via shortcut while recording");
                     } else {
-                        log::warn!("Stop requested but no stop channel found (recording not ready or already finishing)");
+                        log::warn!(
+                            "Stop requested but no stop channel found (recording not ready or already finishing)"
+                        );
                     }
                     return DaemonResponse::success()
                         .with_message("Recording stop signal sent".to_string());
