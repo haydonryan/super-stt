@@ -23,7 +23,7 @@ impl SuperSTTDaemon {
         &self,
         typer: &mut Typer,
         write_mode: bool,
-        manual_stop: bool,
+        disable_silence_detection: bool,
     ) -> DaemonResponse {
         // Check if already recording - prevent multiple simultaneous recordings
         {
@@ -37,7 +37,10 @@ impl SuperSTTDaemon {
         }
 
         // Wait for recording to complete and return the transcription
-        match self.record_and_transcribe(typer, write_mode, manual_stop).await {
+        match self
+            .record_and_transcribe(typer, write_mode, disable_silence_detection)
+            .await
+        {
             Ok(transcription) => {
                 if transcription.trim().is_empty() {
                     info!("🎤 Recording completed - No speech detected");
@@ -74,21 +77,21 @@ impl SuperSTTDaemon {
         &self,
         typer: &mut Typer,
         write_mode: bool,
-        manual_stop: bool,
+        disable_silence_detection: bool,
     ) -> Result<String> {
         info!("Starting direct audio recording in daemon with simplified architecture");
 
         // Create a broadcast channel so any recording can be stopped externally.
-        // Manual-stop mode also disables silence detection.
+        // Disabling silence detection keeps recording running until stopped.
         let (stop_tx, stop_rx) = tokio::sync::broadcast::channel(1);
         *self.manual_stop_tx.write().await = Some(stop_tx);
-        if manual_stop {
-            info!("🎛️ Recording mode: manual-stop (silence detection disabled)");
+        if disable_silence_detection {
+            info!("🎛️ Recording mode: silence detection disabled");
         } else {
-            info!("🎛️ Recording mode: auto-stop (silence detection enabled)");
+            info!("🎛️ Recording mode: silence detection enabled");
         }
-        if manual_stop {
-            info!("🔴 Manual-stop mode active: press the shortcut again to stop recording");
+        if disable_silence_detection {
+            info!("🔴 Silence detection disabled: press the shortcut again to stop recording");
         }
 
         // Set up recording state and create recorder
@@ -124,7 +127,12 @@ impl SuperSTTDaemon {
             let udp_streamer = Arc::clone(&self.udp_streamer);
             async move {
                 recorder
-                    .record_until_silence_with_streaming(udp_streamer, None, manual_stop, Some(stop_rx))
+                    .record_until_silence_with_streaming(
+                        udp_streamer,
+                        None,
+                        disable_silence_detection,
+                        Some(stop_rx),
+                    )
                     .await
             }
         });

@@ -84,7 +84,7 @@ pub struct SuperSTTDaemon {
     pub resource_manager: Arc<ResourceManager>,
     // Preview typing setting (beta feature)
     pub preview_typing_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    // Sender used to signal a running recording to stop early (manual-stop or external stop)
+    // Sender used to signal a running recording to stop early (shortcut or external stop)
     pub manual_stop_tx: Arc<tokio::sync::RwLock<Option<tokio::sync::broadcast::Sender<()>>>>,
 }
 

@@ -129,9 +129,9 @@ impl DaemonAudioRecorder {
         udp_streamer: Arc<UdpAudioStreamer>,
         // Optional channel to forward live mono PCM samples and device sample rate
         preview_tx: Option<tokio::sync::mpsc::UnboundedSender<(Vec<f32>, u32)>>,
-        // When true, disables silence detection (manual-stop mode)
-        manual_mode: bool,
-        // Optional external stop signal (manual-stop or early stop)
+        // When true, disables silence detection (recording stops only via stop signal)
+        silence_detection_disabled: bool,
+        // Optional external stop signal (shortcut stop or early stop)
         mut stop_rx: Option<tokio::sync::broadcast::Receiver<()>>,
     ) -> Result<Vec<f32>> {
         info!("🎤 Starting audio recording with streaming...");
@@ -159,7 +159,7 @@ impl DaemonAudioRecorder {
             };
             *state = RecordingState::new();
             state.recording_start = Some(Instant::now());
-            state.manual_mode = manual_mode;
+            state.silence_detection_disabled = silence_detection_disabled;
         }
 
         // Set up audio stream
@@ -230,16 +230,12 @@ impl DaemonAudioRecorder {
         let mut timeout_occurred = false;
 
         loop {
-            // In manual-stop mode, race between the periodic check and the stop signal
+            // When a stop signal is present, race between the periodic check and the stop signal
             if let Some(ref mut stop_rx) = stop_rx {
                 tokio::select! {
                     _ = time::sleep(AUDIO_LOOP_INTERVAL) => {}
                     _ = stop_rx.recv() => {
-                        if manual_mode {
-                            info!("🛑 Manual stop signal received, ending recording");
-                        } else {
-                            info!("🛑 Stop signal received, ending recording");
-                        }
+                        info!("🛑 Stop signal received, ending recording");
                         break;
                     }
                 }
@@ -265,8 +261,8 @@ impl DaemonAudioRecorder {
             }
 
             // Intelligent timeout logic - only timeout if no speech has been detected
-            // (not applicable in manual-stop mode)
-            if !manual_mode {
+            // (not applicable when silence detection is disabled)
+            if !silence_detection_disabled {
                 let elapsed = start_time.elapsed();
                 let has_detected_speech = {
                     let state = match self.recording_state.lock() {

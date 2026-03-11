@@ -63,7 +63,7 @@ impl SuperSTTDaemon {
             }
             Command::Record {
                 write_mode,
-                manual_stop,
+                disable_silence_detection,
             } => {
                 // Toggle behaviour: if already recording, stop it and return immediately;
                 // the first caller will receive the transcription when it finishes.
@@ -80,7 +80,7 @@ impl SuperSTTDaemon {
                         .with_message("Recording stop signal sent".to_string());
                 }
                 let mut typer = Typer::default();
-                self.handle_record_internal(&mut typer, write_mode, manual_stop)
+                self.handle_record_internal(&mut typer, write_mode, disable_silence_detection)
                     .await
             }
             Command::SetAudioTheme { theme } => self.handle_set_audio_theme(theme),

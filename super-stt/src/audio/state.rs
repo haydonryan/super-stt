@@ -35,7 +35,7 @@ pub struct RecordingState {
     pub speech_buffer: VecDeque<bool>,
     pub recording_start: Option<Instant>,
     /// When true, silence detection is disabled; recording stops only via external signal.
-    pub manual_mode: bool,
+    pub silence_detection_disabled: bool,
 
     pub recent_levels: VecDeque<f32>,
     pub quiet_levels: VecDeque<f32>,
@@ -59,7 +59,7 @@ impl RecordingState {
             stop_requested: false,
             speech_buffer: VecDeque::with_capacity(SPEECH_BUFFER_SIZE),
             recording_start: None,
-            manual_mode: false,
+            silence_detection_disabled: false,
 
             recent_levels: VecDeque::with_capacity(RECENT_LEVELS_BUFFER_SIZE),
             quiet_levels: VecDeque::with_capacity(QUIET_LEVELS_BUFFER_SIZE),

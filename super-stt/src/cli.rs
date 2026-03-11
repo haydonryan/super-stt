@@ -51,7 +51,10 @@ pub fn build() -> Command {
                 .action(ArgAction::SetTrue)
             )
             .arg(
-                arg!(-m --"manual-stop" "Stop recording by pressing the shortcut a second time (disables silence detection)")
+                arg!(
+                    -d --"disable-silence-detection"
+                    "Disable silence detection; press the shortcut again to stop recording"
+                )
                 .action(ArgAction::SetTrue)
             )
             .arg(
