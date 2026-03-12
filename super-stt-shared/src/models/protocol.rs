@@ -430,6 +430,45 @@ impl Validate for DaemonRequest {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn record_command_parses_disable_silence_detection() {
+        let request = DaemonRequest {
+            command: "record".to_string(),
+            audio_data: None,
+            sample_rate: None,
+            client_id: None,
+            event_types: None,
+            client_info: None,
+            since_timestamp: None,
+            limit: None,
+            event_type: None,
+            data: Some(json!({
+                "write_mode": false,
+                "disable_silence_detection": true,
+            })),
+            language: None,
+            enabled: None,
+        };
+
+        let command = Command::try_from(request).expect("record command should parse");
+        match command {
+            Command::Record {
+                write_mode,
+                disable_silence_detection,
+            } => {
+                assert!(!write_mode);
+                assert!(disable_silence_detection);
+            }
+            _ => panic!("expected Command::Record"),
+        }
+    }
+}
+
 impl TryFrom<DaemonRequest> for Command {
     type Error = String;
 

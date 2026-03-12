@@ -111,3 +111,25 @@ pub fn build() -> Command {
         .value_parser(["classic", "gentle", "minimal", "scifi", "musical", "nature", "retro", "silent"])
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_disable_silence_detection_flag_parses() {
+        let matches = build()
+            .try_get_matches_from([
+                "super-stt",
+                "record",
+                "--disable-silence-detection",
+            ])
+            .expect("command should parse");
+
+        let record_matches = matches
+            .subcommand_matches("record")
+            .expect("record subcommand should be present");
+
+        assert!(record_matches.get_flag("disable-silence-detection"));
+    }
+}
