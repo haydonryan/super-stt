@@ -152,6 +152,7 @@ pub async fn run() -> Result<()> {
 /// Handle the record subcommand - direct recording mode
 async fn handle_record_command(matches: &clap::ArgMatches) -> Result<()> {
     let write_mode = matches.get_flag("write");
+    let disable_silence_detection = matches.get_flag("disable-silence-detection");
     let socket_path = matches
         .get_one::<PathBuf>("socket")
         .unwrap_or(&cli::DEFAULT_SOCKET_PATH);
@@ -170,7 +171,8 @@ async fn handle_record_command(matches: &clap::ArgMatches) -> Result<()> {
     // Try to connect to existing daemon first
     if socket_path.exists() {
         info!("Found existing daemon, sending record request...");
-        return send_record_request_to_daemon(socket_path, write_mode).await;
+        return send_record_request_to_daemon(socket_path, write_mode, disable_silence_detection)
+            .await;
     }
 
     // If no daemon is running, inform user to start it first
@@ -221,7 +223,11 @@ async fn handle_status_command(matches: &clap::ArgMatches) -> Result<()> {
 }
 
 /// Send a record request to an existing daemon and wait for acknowledgment
-async fn send_record_request_to_daemon(socket_path: &PathBuf, write_mode: bool) -> Result<()> {
+async fn send_record_request_to_daemon(
+    socket_path: &PathBuf,
+    write_mode: bool,
+    disable_silence_detection: bool,
+) -> Result<()> {
     use super_stt_shared::models::protocol::{DaemonRequest, DaemonResponse};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
@@ -242,7 +248,8 @@ async fn send_record_request_to_daemon(socket_path: &PathBuf, write_mode: bool) 
         event_type: None,
         client_id: Some("record_client".to_string()),
         data: Some(serde_json::json!({
-            "write_mode": write_mode
+            "write_mode": write_mode,
+            "disable_silence_detection": disable_silence_detection,
         })),
         language: None,
         enabled: None,
@@ -272,9 +279,17 @@ async fn send_record_request_to_daemon(socket_path: &PathBuf, write_mode: bool) 
     let response: DaemonResponse = serde_json::from_slice(&response_data)?;
 
     if response.status == "success" {
-        info!("🎤 Recording started by daemon");
-        if write_mode {
-            info!("📝 Will type transcription when complete");
+        let msg = response.message.as_deref().unwrap_or("");
+        if msg == "Recording stop signal sent" {
+            info!("🛑 Recording stop signal sent to daemon");
+        } else {
+            info!("🎤 Recording started by daemon");
+            if write_mode {
+                info!("📝 Will type transcription when complete");
+            }
+            if disable_silence_detection {
+                info!("🔴 Silence detection disabled: press the shortcut again to stop");
+            }
         }
     } else {
         warn!(

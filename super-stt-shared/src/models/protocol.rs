@@ -341,6 +341,7 @@ pub enum Command {
     },
     Record {
         write_mode: bool,
+        disable_silence_detection: bool,
     },
     SetAudioTheme {
         theme: String,
@@ -426,6 +427,45 @@ impl Validate for DaemonRequest {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn record_command_parses_disable_silence_detection() {
+        let request = DaemonRequest {
+            command: "record".to_string(),
+            audio_data: None,
+            sample_rate: None,
+            client_id: None,
+            event_types: None,
+            client_info: None,
+            since_timestamp: None,
+            limit: None,
+            event_type: None,
+            data: Some(json!({
+                "write_mode": false,
+                "disable_silence_detection": true,
+            })),
+            language: None,
+            enabled: None,
+        };
+
+        let command = Command::try_from(request).expect("record command should parse");
+        match command {
+            Command::Record {
+                write_mode,
+                disable_silence_detection,
+            } => {
+                assert!(!write_mode);
+                assert!(disable_silence_detection);
+            }
+            _ => panic!("expected Command::Record"),
+        }
     }
 }
 
@@ -567,7 +607,16 @@ fn cmd_record(request: &DaemonRequest) -> Command {
         .and_then(|data| data.get("write_mode"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
-    Command::Record { write_mode }
+    let disable_silence_detection = request
+        .data
+        .as_ref()
+        .and_then(|data| data.get("disable_silence_detection"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Command::Record {
+        write_mode,
+        disable_silence_detection,
+    }
 }
 
 fn cmd_set_audio_theme(request: &DaemonRequest) -> Result<Command, String> {

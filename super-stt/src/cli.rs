@@ -51,6 +51,13 @@ pub fn build() -> Command {
                 .action(ArgAction::SetTrue)
             )
             .arg(
+                arg!(
+                    -d --"disable-silence-detection"
+                    "Disable silence detection; press the shortcut again to stop recording"
+                )
+                .action(ArgAction::SetTrue)
+            )
+            .arg(
                 arg!(-s --socket <socket> "The daemon socket path")
                 .default_value(*DEFAULT_SOCKET_PATH_STR)
                 .value_parser(value_parser!(PathBuf))
@@ -103,4 +110,26 @@ pub fn build() -> Command {
         .help("Choose audio feedback style: classic, gentle, minimal, scifi, musical, nature, retro, silent")
         .value_parser(["classic", "gentle", "minimal", "scifi", "musical", "nature", "retro", "silent"])
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_disable_silence_detection_flag_parses() {
+        let matches = build()
+            .try_get_matches_from([
+                "super-stt",
+                "record",
+                "--disable-silence-detection",
+            ])
+            .expect("command should parse");
+
+        let record_matches = matches
+            .subcommand_matches("record")
+            .expect("record subcommand should be present");
+
+        assert!(record_matches.get_flag("disable-silence-detection"));
+    }
 }

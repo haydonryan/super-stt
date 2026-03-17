@@ -61,9 +61,29 @@ impl SuperSTTDaemon {
                 self.handle_realtime_audio(client_id, audio_data, sample_rate)
                     .await
             }
-            Command::Record { write_mode } => {
+            Command::Record {
+                write_mode,
+                disable_silence_detection,
+            } => {
+                // Toggle behaviour: if already recording, stop it and return immediately;
+                // the first caller will receive the transcription when it finishes.
+                let is_recording = *self.is_recording.read().await;
+                if is_recording {
+                    let guard = self.manual_stop_tx.read().await;
+                    if let Some(tx) = guard.as_ref() {
+                        let _ = tx.send(());
+                        log::info!("🛑 Stop triggered via shortcut while recording");
+                    } else {
+                        log::warn!(
+                            "Stop requested but no stop channel found (recording not ready or already finishing)"
+                        );
+                    }
+                    return DaemonResponse::success()
+                        .with_message("Recording stop signal sent".to_string());
+                }
                 let mut typer = Typer::default();
-                self.handle_record_internal(&mut typer, write_mode).await
+                self.handle_record_internal(&mut typer, write_mode, disable_silence_detection)
+                    .await
             }
             Command::SetAudioTheme { theme } => self.handle_set_audio_theme(theme),
             Command::GetAudioTheme => self.handle_get_audio_theme(),
@@ -124,5 +144,106 @@ impl SuperSTTDaemon {
                 DaemonResponse::error(&format!("Failed to process audio chunk: {e}"))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::streamer::UdpAudioStreamer;
+    use crate::config::DaemonConfig;
+    use crate::daemon::auth::ProcessAuth;
+    use crate::download_progress::DownloadStateManager;
+    use crate::input::audio::AudioProcessor;
+    use crate::services::transcription::RealTimeTranscriptionManager;
+    use super_stt_shared::NotificationManager;
+    use super_stt_shared::resource_management::ResourceManager;
+    use super_stt_shared::theme::AudioTheme;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, RwLock};
+    use tokio::sync::broadcast;
+    use tokio::time::{timeout, Duration};
+
+    async fn test_daemon() -> SuperSTTDaemon {
+        let socket_path = PathBuf::from("/tmp/super-stt-test.sock");
+        let model = Arc::new(tokio::sync::RwLock::new(None));
+        let model_type = Arc::new(tokio::sync::RwLock::new(None));
+        let notification_manager = Arc::new(NotificationManager::new(10, 10));
+        let audio_processor = Arc::new(AudioProcessor::new());
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let realtime_manager = Arc::new(RealTimeTranscriptionManager::new(
+            Arc::clone(&model),
+            Arc::clone(&model_type),
+            Arc::clone(&notification_manager),
+            Arc::clone(&audio_processor),
+        ));
+        let udp_streamer = Arc::new(
+            UdpAudioStreamer::new("127.0.0.1:0")
+                .await
+                .expect("udp streamer should bind"),
+        );
+
+        SuperSTTDaemon {
+            socket_path,
+            model,
+            model_type,
+            notification_manager,
+            audio_processor,
+            shutdown_tx,
+            dbus_manager: None,
+            realtime_manager,
+            udp_streamer,
+            audio_theme: Arc::new(RwLock::new(AudioTheme::default())),
+            is_recording: Arc::new(tokio::sync::RwLock::new(false)),
+            audio_monitoring_handle: Arc::new(tokio::sync::RwLock::new(None)),
+            download_manager: Arc::new(DownloadStateManager::new()),
+            preferred_device: Arc::new(tokio::sync::RwLock::new("cpu".to_string())),
+            actual_device: Arc::new(tokio::sync::RwLock::new("cpu".to_string())),
+            config: Arc::new(tokio::sync::RwLock::new(DaemonConfig::default())),
+            active_connections: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            process_auth: ProcessAuth::new(),
+            resource_manager: Arc::new(ResourceManager::development()),
+            preview_typing_enabled: Arc::new(AtomicBool::new(false)),
+            manual_stop_tx: Arc::new(tokio::sync::RwLock::new(None)),
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_signal_sent_on_second_press_even_with_silence_detection_enabled() {
+        let daemon = test_daemon().await;
+        let (tx, mut rx) = tokio::sync::broadcast::channel(1);
+
+        *daemon.is_recording.write().await = true;
+        *daemon.manual_stop_tx.write().await = Some(tx);
+
+        let request = DaemonRequest {
+            command: "record".to_string(),
+            audio_data: None,
+            sample_rate: None,
+            client_id: None,
+            event_types: None,
+            client_info: None,
+            since_timestamp: None,
+            limit: None,
+            event_type: None,
+            data: Some(serde_json::json!({
+                "write_mode": false,
+                "disable_silence_detection": false,
+            })),
+            language: None,
+            enabled: None,
+        };
+
+        let response = daemon.handle_command(request).await;
+        assert_eq!(response.status, "success");
+        assert_eq!(
+            response.message.as_deref(),
+            Some("Recording stop signal sent")
+        );
+
+        let recv = timeout(Duration::from_millis(200), rx.recv()).await;
+        assert!(recv.is_ok(), "expected stop signal to be sent");
     }
 }
