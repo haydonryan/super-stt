@@ -123,25 +123,13 @@ impl SuperSTTDaemon {
                 return Ok(());
             }
 
-            // Handle fire-and-forget commands: send ACK immediately, process in background
+            // Handle record commands: if already recording, handle synchronously
+            // (toggle stop returns immediately); otherwise ACK and record in background.
             if request.command.as_str() == "record" {
-                let ack = DaemonResponse::success().with_message("Recording started".to_string());
-                if let Err(e) = self.send_response(&mut stream, &ack).await {
-                    warn!("Failed to send record ACK: {e}");
+                if let Err(e) = self.handle_record_request(&mut stream, request).await {
+                    warn!("Record request handling failed: {e}");
                     break;
                 }
-
-                let daemon = self.clone();
-                tokio::spawn(async move {
-                    info!("🎤 Background record task started");
-                    let response = daemon.handle_command(request).await;
-                    if response.status != "success" {
-                        warn!(
-                            "Record command failed: {}",
-                            response.message.unwrap_or_default()
-                        );
-                    }
-                });
                 continue;
             }
 
@@ -161,7 +149,36 @@ impl SuperSTTDaemon {
         Ok(())
     }
 
-    /// Handle persistent client connections (for subscriptions and events)
+    /// Handle a record request: if already recording, respond synchronously
+    /// (stop/transcribing); otherwise ACK immediately and record in background.
+    async fn handle_record_request(
+        &self,
+        stream: &mut UnixStream,
+        request: DaemonRequest,
+    ) -> Result<()> {
+        let is_recording = *self.is_recording.read().await;
+        if is_recording {
+            let response = self.handle_command(request).await;
+            self.send_response(stream, &response).await?;
+        } else {
+            let ack = DaemonResponse::success().with_message("Recording started".to_string());
+            self.send_response(stream, &ack).await?;
+
+            let daemon = self.clone();
+            tokio::spawn(async move {
+                info!("🎤 Background record task started");
+                let response = daemon.handle_command(request).await;
+                if response.status != "success" {
+                    warn!(
+                        "Record command failed: {}",
+                        response.message.unwrap_or_default()
+                    );
+                }
+            });
+        }
+        Ok(())
+    }
+
     /// Handle persistent client connections (for subscriptions and events)
     ///
     /// # Errors

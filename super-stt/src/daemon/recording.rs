@@ -8,22 +8,18 @@ use chrono::Utc;
 use log::{debug, error, info, warn};
 use std::sync::Arc;
 use super_stt_shared::models::protocol::DaemonResponse;
+use super_stt_shared::models::recording_stop_mode::RecordingStopMode;
 use tokio::time::Instant;
 
 // Removed PreviewContext - no longer needed with simplified architecture
 
 impl SuperSTTDaemon {
-    /// Handle record command - direct recording in daemon (legacy method)
-    pub async fn handle_record(&self, typer: &mut Typer, write_mode: bool) -> DaemonResponse {
-        self.handle_record_internal(typer, write_mode, false).await
-    }
-
     /// Internal record handling implementation
     pub async fn handle_record_internal(
         &self,
         typer: &mut Typer,
         write_mode: bool,
-        disable_silence_detection: bool,
+        stop_mode: RecordingStopMode,
     ) -> DaemonResponse {
         // Check if already recording - prevent multiple simultaneous recordings
         {
@@ -38,7 +34,7 @@ impl SuperSTTDaemon {
 
         // Wait for recording to complete and return the transcription
         match self
-            .record_and_transcribe(typer, write_mode, disable_silence_detection)
+            .record_and_transcribe(typer, write_mode, stop_mode)
             .await
         {
             Ok(transcription) => {
@@ -57,6 +53,12 @@ impl SuperSTTDaemon {
             }
             Err(e) => {
                 error!("🎤 Recording failed: {e}");
+                // Reset recording state on failure to prevent permanent lockout
+                {
+                    let mut guard = self.is_recording.write().await;
+                    *guard = false;
+                }
+                self.broadcast_recording_state_change(false).await;
                 DaemonResponse::error(&format!("Recording failed: {e}"))
             }
         }
@@ -77,22 +79,16 @@ impl SuperSTTDaemon {
         &self,
         typer: &mut Typer,
         write_mode: bool,
-        disable_silence_detection: bool,
+        stop_mode: RecordingStopMode,
     ) -> Result<String> {
         info!("Starting direct audio recording in daemon with simplified architecture");
 
+        let silence_detection_disabled = !stop_mode.silence_detection_enabled();
+
         // Create a broadcast channel so any recording can be stopped externally.
-        // Disabling silence detection keeps recording running until stopped.
         let (stop_tx, stop_rx) = tokio::sync::broadcast::channel(1);
         *self.manual_stop_tx.write().await = Some(stop_tx);
-        if disable_silence_detection {
-            info!("🎛️ Recording mode: silence detection disabled");
-        } else {
-            info!("🎛️ Recording mode: silence detection enabled");
-        }
-        if disable_silence_detection {
-            info!("🔴 Silence detection disabled: press the shortcut again to stop recording");
-        }
+        info!("🎛️ Recording mode: {stop_mode}");
 
         // Set up recording state and create recorder
         let mut recorder = match self.setup_recording_session(write_mode).await {
@@ -130,7 +126,7 @@ impl SuperSTTDaemon {
                     .record_until_silence_with_streaming(
                         udp_streamer,
                         None,
-                        disable_silence_detection,
+                        silence_detection_disabled,
                         Some(stop_rx),
                     )
                     .await
@@ -275,7 +271,9 @@ impl SuperSTTDaemon {
             }
         };
 
-        // Clear stop channel now that recording is done
+        // Audio capture is done — clear stop channel.
+        // is_recording stays true until finalize_recording_session so the daemon
+        // rejects new recordings while transcription is in progress.
         *self.manual_stop_tx.write().await = None;
 
         // Clear preview after recording is done (only if preview typing was enabled)
@@ -433,20 +431,6 @@ impl SuperSTTDaemon {
                 warn!("Failed to emit D-Bus listening_started signal: {e}");
             }
         }
-    }
-
-    /// Record audio and clean up preview session (legacy - kept for reference)
-    #[allow(dead_code)]
-    async fn record_audio_and_cleanup_preview(
-        &self,
-        mut recorder: DaemonAudioRecorder,
-        _legacy_param: (),
-        _write_mode: bool,
-    ) -> Result<Vec<f32>> {
-        // Legacy method - replaced with simplified architecture
-        recorder
-            .record_until_silence_with_streaming(Arc::clone(&self.udp_streamer), None, false, None)
-            .await
     }
 
     /// Transcribe audio with spinner if needed

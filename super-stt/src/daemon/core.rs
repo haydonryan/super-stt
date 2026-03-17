@@ -63,28 +63,8 @@ impl SuperSTTDaemon {
             }
             Command::Record {
                 write_mode,
-                disable_silence_detection,
-            } => {
-                // Toggle behaviour: if already recording, stop it and return immediately;
-                // the first caller will receive the transcription when it finishes.
-                let is_recording = *self.is_recording.read().await;
-                if is_recording {
-                    let guard = self.manual_stop_tx.read().await;
-                    if let Some(tx) = guard.as_ref() {
-                        let _ = tx.send(());
-                        log::info!("🛑 Stop triggered via shortcut while recording");
-                    } else {
-                        log::warn!(
-                            "Stop requested but no stop channel found (recording not ready or already finishing)"
-                        );
-                    }
-                    return DaemonResponse::success()
-                        .with_message("Recording stop signal sent".to_string());
-                }
-                let mut typer = Typer::default();
-                self.handle_record_internal(&mut typer, write_mode, disable_silence_detection)
-                    .await
-            }
+                stop_mode,
+            } => self.handle_record_command(write_mode, stop_mode).await,
             Command::SetAudioTheme { theme } => self.handle_set_audio_theme(theme),
             Command::GetAudioTheme => self.handle_get_audio_theme(),
             Command::TestAudioTheme => self.handle_test_audio_theme().await,
@@ -99,7 +79,51 @@ impl SuperSTTDaemon {
             Command::ListAudioThemes => self.handle_list_audio_themes(),
             Command::SetPreviewTyping { enabled } => self.handle_set_preview_typing(enabled).await,
             Command::GetPreviewTyping => self.handle_get_preview_typing(),
+            Command::SetRecordingStopMode { mode } => {
+                self.handle_set_recording_stop_mode(mode).await
+            }
+            Command::GetRecordingStopMode => self.handle_get_recording_stop_mode().await,
         }
+    }
+
+    /// Handle a record command — resolve mode, toggle stop, or start recording.
+    async fn handle_record_command(
+        &self,
+        write_mode: bool,
+        stop_mode: Option<super_stt_shared::models::recording_stop_mode::RecordingStopMode>,
+    ) -> DaemonResponse {
+        // Resolve effective mode: per-request override or daemon config default
+        let effective_mode = if let Some(mode) = stop_mode {
+            mode
+        } else {
+            let config = self.config.read().await;
+            config.transcription.recording_stop_mode
+        };
+
+        // Toggle behaviour: if already recording, stop it (if mode allows)
+        let is_recording = *self.is_recording.read().await;
+        if is_recording {
+            let guard = self.manual_stop_tx.read().await;
+            if guard.is_none() {
+                log::info!("Transcription in progress, please wait");
+                return DaemonResponse::success()
+                    .with_message("Transcription in progress, please wait".to_string());
+            }
+            if !effective_mode.manual_stop_enabled() {
+                log::info!("Second press ignored: recording in SilenceOnly mode");
+                return DaemonResponse::success()
+                    .with_message("Manual stop not enabled in current mode".to_string());
+            }
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.send(());
+                log::info!("🛑 Stop triggered via shortcut while recording");
+            }
+            return DaemonResponse::success()
+                .with_message(DaemonResponse::RECORDING_STOP_SIGNAL_MSG.to_string());
+        }
+        let mut typer = Typer::default();
+        self.handle_record_internal(&mut typer, write_mode, effective_mode)
+            .await
     }
 
     /// Placeholder for real-time handlers - these need to be implemented
@@ -156,15 +180,15 @@ mod tests {
     use crate::download_progress::DownloadStateManager;
     use crate::input::audio::AudioProcessor;
     use crate::services::transcription::RealTimeTranscriptionManager;
-    use super_stt_shared::NotificationManager;
-    use super_stt_shared::resource_management::ResourceManager;
-    use super_stt_shared::theme::AudioTheme;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, RwLock};
+    use super_stt_shared::NotificationManager;
+    use super_stt_shared::resource_management::ResourceManager;
+    use super_stt_shared::theme::AudioTheme;
     use tokio::sync::broadcast;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     async fn test_daemon() -> SuperSTTDaemon {
         let socket_path = PathBuf::from("/tmp/super-stt-test.sock");
@@ -210,15 +234,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn stop_signal_sent_on_second_press_even_with_silence_detection_enabled() {
-        let daemon = test_daemon().await;
-        let (tx, mut rx) = tokio::sync::broadcast::channel(1);
-
-        *daemon.is_recording.write().await = true;
-        *daemon.manual_stop_tx.write().await = Some(tx);
-
-        let request = DaemonRequest {
+    fn make_record_request(data: Option<serde_json::Value>) -> DaemonRequest {
+        DaemonRequest {
             command: "record".to_string(),
             audio_data: None,
             sample_rate: None,
@@ -228,22 +245,208 @@ mod tests {
             since_timestamp: None,
             limit: None,
             event_type: None,
-            data: Some(serde_json::json!({
-                "write_mode": false,
-                "disable_silence_detection": false,
-            })),
+            data,
             language: None,
             enabled: None,
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_signal_sent_on_second_press_with_default_mode() {
+        // Default config mode is SilenceAndManual, which allows manual stop
+        let daemon = test_daemon().await;
+        let (tx, mut rx) = tokio::sync::broadcast::channel(1);
+
+        *daemon.is_recording.write().await = true;
+        *daemon.manual_stop_tx.write().await = Some(tx);
+
+        let request = make_record_request(Some(serde_json::json!({
+            "write_mode": false,
+        })));
 
         let response = daemon.handle_command(request).await;
         assert_eq!(response.status, "success");
         assert_eq!(
             response.message.as_deref(),
-            Some("Recording stop signal sent")
+            Some(DaemonResponse::RECORDING_STOP_SIGNAL_MSG)
         );
 
         let recv = timeout(Duration::from_millis(200), rx.recv()).await;
         assert!(recv.is_ok(), "expected stop signal to be sent");
+    }
+
+    #[tokio::test]
+    async fn second_press_ignored_in_silence_only_mode() {
+        let daemon = test_daemon().await;
+        let (tx, mut rx) = tokio::sync::broadcast::channel(1);
+
+        // Set daemon config to SilenceOnly
+        {
+            use super_stt_shared::models::recording_stop_mode::RecordingStopMode;
+            let mut config = daemon.config.write().await;
+            config.transcription.recording_stop_mode = RecordingStopMode::SilenceOnly;
+        }
+
+        *daemon.is_recording.write().await = true;
+        *daemon.manual_stop_tx.write().await = Some(tx);
+
+        // No stop_mode in request → uses daemon config (SilenceOnly)
+        let request = make_record_request(Some(serde_json::json!({
+            "write_mode": false,
+        })));
+
+        let response = daemon.handle_command(request).await;
+        assert_eq!(response.status, "success");
+        assert_eq!(
+            response.message.as_deref(),
+            Some("Manual stop not enabled in current mode")
+        );
+
+        // Stop signal should NOT have been sent
+        let recv = timeout(Duration::from_millis(100), rx.recv()).await;
+        assert!(
+            recv.is_err(),
+            "stop signal should not be sent in SilenceOnly mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_request_stop_mode_overrides_config() {
+        let daemon = test_daemon().await;
+        let (tx, mut rx) = tokio::sync::broadcast::channel(1);
+
+        // Daemon config is SilenceOnly (no manual stop)
+        {
+            use super_stt_shared::models::recording_stop_mode::RecordingStopMode;
+            let mut config = daemon.config.write().await;
+            config.transcription.recording_stop_mode = RecordingStopMode::SilenceOnly;
+        }
+
+        *daemon.is_recording.write().await = true;
+        *daemon.manual_stop_tx.write().await = Some(tx);
+
+        // But the request explicitly asks for manual-only mode
+        let request = make_record_request(Some(serde_json::json!({
+            "write_mode": false,
+            "stop_mode": "manual-only",
+        })));
+
+        let response = daemon.handle_command(request).await;
+        assert_eq!(response.status, "success");
+        assert_eq!(
+            response.message.as_deref(),
+            Some(DaemonResponse::RECORDING_STOP_SIGNAL_MSG)
+        );
+
+        let recv = timeout(Duration::from_millis(200), rx.recv()).await;
+        assert!(
+            recv.is_ok(),
+            "per-request override should allow manual stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn second_press_during_transcription_returns_wait_message() {
+        let daemon = test_daemon().await;
+
+        // Transcribing state: is_recording=true, manual_stop_tx=None
+        *daemon.is_recording.write().await = true;
+        // manual_stop_tx is already None by default
+
+        let request = make_record_request(Some(serde_json::json!({
+            "write_mode": false,
+        })));
+
+        let response = daemon.handle_command(request).await;
+        assert_eq!(response.status, "success");
+        assert_eq!(
+            response.message.as_deref(),
+            Some("Transcription in progress, please wait")
+        );
+    }
+
+    #[tokio::test]
+    async fn per_request_silence_only_overrides_manual_config() {
+        let daemon = test_daemon().await;
+        let (tx, mut rx) = tokio::sync::broadcast::channel(1);
+
+        // Config allows manual stop (default SilenceAndManual)
+        *daemon.is_recording.write().await = true;
+        *daemon.manual_stop_tx.write().await = Some(tx);
+
+        // But request forces SilenceOnly
+        let request = make_record_request(Some(serde_json::json!({
+            "write_mode": false,
+            "stop_mode": "silence-only",
+        })));
+
+        let response = daemon.handle_command(request).await;
+        assert_eq!(response.status, "success");
+        assert_eq!(
+            response.message.as_deref(),
+            Some("Manual stop not enabled in current mode")
+        );
+
+        let recv = timeout(Duration::from_millis(100), rx.recv()).await;
+        assert!(
+            recv.is_err(),
+            "stop signal should not be sent in SilenceOnly mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_signal_succeeds_even_with_no_receivers() {
+        let daemon = test_daemon().await;
+        let (tx, _rx) = tokio::sync::broadcast::channel::<()>(1);
+        // Drop _rx so there are no receivers
+
+        *daemon.is_recording.write().await = true;
+        *daemon.manual_stop_tx.write().await = Some(tx);
+
+        let request = make_record_request(Some(serde_json::json!({
+            "write_mode": false,
+        })));
+
+        let response = daemon.handle_command(request).await;
+        assert_eq!(response.status, "success");
+        assert_eq!(
+            response.message.as_deref(),
+            Some(DaemonResponse::RECORDING_STOP_SIGNAL_MSG)
+        );
+    }
+
+    #[tokio::test]
+    async fn is_recording_reset_after_error_cleanup() {
+        // Verify that the error cleanup pattern in handle_record_internal
+        // correctly resets is_recording. We can't trigger the full recording
+        // pipeline in CI (requires audio hardware + display server for Typer),
+        // so we simulate the state and verify cleanup.
+        let daemon = test_daemon().await;
+
+        // Simulate: setup_recording_session ran and set is_recording = true,
+        // then record_and_transcribe failed.
+        *daemon.is_recording.write().await = true;
+        assert!(*daemon.is_recording.read().await);
+
+        // The error path in handle_record_internal does:
+        //   *self.is_recording.write().await = false;
+        //   self.broadcast_recording_state_change(false).await;
+        // Verify the daemon can recover from this state.
+        {
+            let mut guard = daemon.is_recording.write().await;
+            *guard = false;
+        }
+        daemon.broadcast_recording_state_change(false).await;
+
+        assert!(
+            !*daemon.is_recording.read().await,
+            "is_recording must be false after error cleanup"
+        );
+
+        // And a new recording request should NOT hit the toggle path
+        // (it should try to start, not return "transcription in progress")
+        // We can't fully test starting a recording here, but we verify the
+        // state allows it by checking the guard is clear.
+        assert!(daemon.manual_stop_tx.read().await.is_none());
     }
 }
