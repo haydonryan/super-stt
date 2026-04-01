@@ -152,6 +152,7 @@ pub async fn run() -> Result<()> {
 /// Handle the record subcommand - direct recording mode
 async fn handle_record_command(matches: &clap::ArgMatches) -> Result<()> {
     let write_mode = matches.get_flag("write");
+    let wait = matches.get_flag("wait");
     let config = DaemonConfig::load();
     // Resolve stop mode: CLI flag → config file → default
     let stop_mode = if let Some(mode) = matches.get_one::<String>("stop-mode") {
@@ -183,8 +184,14 @@ async fn handle_record_command(matches: &clap::ArgMatches) -> Result<()> {
     // Try to connect to existing daemon first
     if socket_path.exists() {
         info!("Found existing daemon, sending record request...");
-        return send_record_request_to_daemon(socket_path, write_mode, &stop_mode, &write_method)
-            .await;
+        return send_record_request_to_daemon(
+            socket_path,
+            write_mode,
+            &stop_mode,
+            &write_method,
+            wait,
+        )
+        .await;
     }
 
     // If no daemon is running, inform user to start it first
@@ -240,6 +247,7 @@ async fn send_record_request_to_daemon(
     write_mode: bool,
     stop_mode: &str,
     write_method: &str,
+    wait: bool,
 ) -> Result<()> {
     use super_stt_shared::models::protocol::{DaemonRequest, DaemonResponse};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -264,6 +272,7 @@ async fn send_record_request_to_daemon(
             "write_mode": write_mode,
             "stop_mode": stop_mode,
             "write_method": write_method,
+            "wait": wait,
         })),
         language: None,
         enabled: None,
@@ -276,37 +285,67 @@ async fn send_record_request_to_daemon(
     stream.write_all(&request_size.to_be_bytes()).await?;
     stream.write_all(&request_data).await?;
 
-    // Wait for ACK from daemon before exiting
-    let mut size_bytes = [0u8; 8];
-    stream
-        .read_exact(&mut size_bytes)
-        .await
-        .context("Failed to read ACK from daemon")?;
-    let response_size = u64::from_be_bytes(size_bytes);
-    let response_len: usize = usize::try_from(response_size)
-        .context("Response size does not fit into memory on this platform")?;
-    let mut response_data = vec![0u8; response_len];
-    stream
-        .read_exact(&mut response_data)
-        .await
-        .context("Failed to read ACK data from daemon")?;
-    let response: DaemonResponse = serde_json::from_slice(&response_data)?;
+    // Read responses from the daemon.
+    // When wait=true, the daemon may stream preview_text responses before the final one.
+    loop {
+        let mut size_bytes = [0u8; 8];
+        stream
+            .read_exact(&mut size_bytes)
+            .await
+            .context("Failed to read response from daemon")?;
+        let response_size = u64::from_be_bytes(size_bytes);
+        let response_len = usize::try_from(response_size)
+            .context("Response size does not fit into memory on this platform")?;
+        let mut response_data = vec![0u8; response_len];
+        stream
+            .read_exact(&mut response_data)
+            .await
+            .context("Failed to read response data from daemon")?;
+        let response: DaemonResponse = serde_json::from_slice(&response_data)?;
 
-    if response.status == "success" {
-        let msg = response.message.as_deref().unwrap_or("");
-        if msg == DaemonResponse::RECORDING_STOP_SIGNAL_MSG {
-            info!("🛑 Recording stopped successfully");
-        } else {
-            info!("🎤 Recording started (stop mode: {stop_mode})");
-            if write_mode {
-                info!("📝 Will type transcription when complete");
-            }
+        // Preview text — overwrite the current line
+        if let Some(preview) = &response.preview_text {
+            use std::io::Write;
+            print!("\r\x1b[K{preview}");
+            std::io::stdout().flush().ok();
+            continue;
         }
-    } else {
-        warn!(
-            "Daemon rejected record request: {}",
-            response.message.unwrap_or_default()
-        );
+
+        // Final response — clear the preview line first if we were streaming
+        if wait {
+            use std::io::Write;
+            print!("\r\x1b[K");
+            std::io::stdout().flush().ok();
+        }
+
+        if response.status == "success" {
+            let msg = response.message.as_deref().unwrap_or("");
+            if msg == DaemonResponse::RECORDING_STOP_SIGNAL_MSG {
+                info!("🛑 Recording stopped successfully");
+            } else if wait {
+                if let Some(transcription) = &response.transcription {
+                    if transcription.is_empty() {
+                        info!("🎤 No speech detected");
+                    } else {
+                        info!("🎤 Transcription: {transcription}");
+                    }
+                } else {
+                    info!("🎤 {msg}");
+                }
+            } else {
+                info!("🎤 Recording started (stop mode: {stop_mode})");
+                if write_mode {
+                    info!("📝 Will type transcription when complete");
+                }
+            }
+        } else {
+            warn!(
+                "Daemon rejected record request: {}",
+                response.message.unwrap_or_default()
+            );
+        }
+
+        break;
     }
 
     Ok(())
