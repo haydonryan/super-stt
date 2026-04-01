@@ -6182,7 +6182,7 @@ dependencies = [
 
 [[package]]
 name = "super-stt"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -6224,7 +6224,7 @@ dependencies = [
 
 [[package]]
 name = "super-stt-app"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -6270,7 +6270,7 @@ dependencies = [
 
 [[package]]
 name = "super-stt-shared"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
