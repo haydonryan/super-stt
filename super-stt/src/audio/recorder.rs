@@ -34,6 +34,7 @@ pub struct DaemonAudioRecorder {
     recording_state: Arc<Mutex<RecordingState>>,
     pub audio_level_tx: broadcast::Sender<AudioLevel>,
     audio_theme: AudioTheme,
+    volume: f32,
     // Audio device initialization state
     audio_device_cache: Arc<Mutex<Option<AudioDeviceCache>>>,
 }
@@ -45,15 +46,15 @@ impl DaemonAudioRecorder {
     ///
     /// Returns an error if warm-up steps fail in a fatal way.
     pub fn new() -> Result<Self> {
-        Self::new_with_theme(AudioTheme::default())
+        Self::new_with_theme(AudioTheme::default(), 1.0)
     }
 
-    /// Create a new recorder with a specific theme
+    /// Create a new recorder with a specific theme and volume
     ///
     /// # Errors
     ///
     /// Returns an error if initialization of audio resources fails.
-    pub fn new_with_theme(theme: AudioTheme) -> Result<Self> {
+    pub fn new_with_theme(theme: AudioTheme, volume: f32) -> Result<Self> {
         let (audio_level_tx, _) = broadcast::channel(1000);
 
         let recorder = Self {
@@ -62,6 +63,7 @@ impl DaemonAudioRecorder {
             recording_state: Arc::new(Mutex::new(RecordingState::new())),
             audio_level_tx,
             audio_theme: theme,
+            volume,
             audio_device_cache: Arc::new(Mutex::new(None)),
         };
 
@@ -177,7 +179,7 @@ impl DaemonAudioRecorder {
 
         // Start frequency analysis and broadcasting task (only when clients are listening)
         let udp_streamer_clone = Arc::clone(&udp_streamer);
-        let device_sample_rate_u32 = stream_config.sample_rate.0;
+        let device_sample_rate_u32 = stream_config.sample_rate;
         let device_sample_rate = device_sample_rate_u32 as f32;
         let analysis_task = tokio::spawn(async move {
             let frequency_analyzer = AudioAnalyzer::new(device_sample_rate, 1024);
@@ -321,7 +323,7 @@ impl DaemonAudioRecorder {
         }
 
         // Resample if needed
-        let device_sample_rate = stream_config.sample_rate.0;
+        let device_sample_rate = stream_config.sample_rate;
         let final_audio = if device_sample_rate == self.sample_rate {
             audio_data
         } else {
@@ -358,8 +360,8 @@ impl DaemonAudioRecorder {
         let optimal_config = supported_configs
             .iter()
             .find(|config| {
-                let max_rate = config.max_sample_rate().0;
-                let min_rate = config.min_sample_rate().0;
+                let max_rate = config.max_sample_rate();
+                let min_rate = config.min_sample_rate();
                 // Look for configs that support common sample rates
                 min_rate <= 48000 && max_rate >= 16000
             })
@@ -368,12 +370,12 @@ impl DaemonAudioRecorder {
             .context("No supported input config")?;
 
         // Use a reasonable sample rate instead of max
-        let target_rate = if optimal_config.max_sample_rate().0 >= 48000 {
-            cpal::SampleRate(48000)
-        } else if optimal_config.max_sample_rate().0 >= 44100 {
-            cpal::SampleRate(44100)
-        } else if optimal_config.max_sample_rate().0 >= 16000 {
-            cpal::SampleRate(16000)
+        let target_rate = if optimal_config.max_sample_rate() >= 48000 {
+            48000
+        } else if optimal_config.max_sample_rate() >= 44100 {
+            44100
+        } else if optimal_config.max_sample_rate() >= 16000 {
+            16000
         } else {
             optimal_config.max_sample_rate()
         };
@@ -387,7 +389,9 @@ impl DaemonAudioRecorder {
             return;
         }
         let (frequencies, duration, fade_in, fade_out) = self.audio_theme.start_sound();
-        if let Err(e) = beeper::play_beep_sequence(&frequencies, duration, fade_in, fade_out) {
+        if let Err(e) =
+            beeper::play_beep_sequence(&frequencies, duration, fade_in, fade_out, self.volume)
+        {
             log::warn!("Failed to play start sound (audio permissions may be missing): {e}");
         }
     }
@@ -398,8 +402,11 @@ impl DaemonAudioRecorder {
             return;
         }
         let (frequencies, duration, fade_in, fade_out) = self.audio_theme.end_sound();
+        let volume = self.volume;
         std::thread::spawn(move || {
-            if let Err(e) = beeper::play_beep_sequence(&frequencies, duration, fade_in, fade_out) {
+            if let Err(e) =
+                beeper::play_beep_sequence(&frequencies, duration, fade_in, fade_out, volume)
+            {
                 log::warn!("Failed to play end sound (audio permissions may be missing): {e}");
             }
         });
@@ -474,7 +481,7 @@ impl DaemonAudioRecorder {
             .default_input_device()
             .context("No input device available")?;
         let config = self.get_optimal_config(&device)?;
-        Ok(config.config().sample_rate.0)
+        Ok(config.config().sample_rate)
     }
 
     /// Prepare recorder for threaded operation - initializes any threaded state
