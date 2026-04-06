@@ -71,23 +71,64 @@ stt record --write --stop-mode manual --write-method ydotool
 ```
 
 ## 🤖 Supported Models
-- voxtral-mini (SOTA) **Recommended with GPU**
-- voxtral-small (SOTA)
-- whisper-tiny **Default**
-- whisper-base **Recommended with CPU**
-- whisper-small
-- whisper-medium
-- whisper-large-v3
+
+### Local Models
+All processing happens on your device. No audio data leaves your machine.
+
+| Model                 | Notes                                      |
+|-----------------------|--------------------------------------------|
+| voxtral-mini          | State-of-the-art. **Recommended with GPU** |
+| voxtral-small         | State-of-the-art                           |
+| whisper-tiny          | **Default**                                |
+| whisper-base          | **Recommended with CPU**                   |
+| whisper-small         |                                            |
+| whisper-medium        |                                            |
+| whisper-large-v3      |                                            |
+
+### Online Models
+
+If your computer does not have enough resources for local models, you can send your audio to third-party providers for transcription. Online models are **disabled by default** and require you to explicitly enable them.
+
+| Provider | Models                                               |
+|----------|------------------------------------------------------|
+| Mistral  | voxtral-mini-latest                                  |
+| OpenAI   | whisper-1, gpt-4o-transcribe, gpt-4o-mini-transcribe |
+| Deepgram | nova-3                                               |
+
+#### Enabling Online Models
+
+1. Open the Super STT app
+2. Navigate to **Online Models** in the sidebar
+3. Enable the **Allow Online Models** toggle
+4. Enter your API key for the provider you want to use (keys are stored in your system keyring)
+5. Go to **Models**, open the model selector, and choose an online model
+
+API keys are stored securely in your system keyring (GNOME Keyring, KWallet, etc.) 
+
+<table>
+<tr>
+<td align="center"><strong>Online Models</strong><br><img src=".github/assets/online-models.png" width="320"></td>
+<td align="center"><strong>Model Selection</strong><br><img src=".github/assets/models-selection.png" width="320"></td>
+</tr>
+</table>
 
 ## Screenshots
 ### Multiple Visualization Styles
-![Centered Bars Visualization](.github/assets/visualization-centered-bars.png)
-![Equalizer Visualization](.github/assets/visualization-equalizer.png)
-![Waveform Visualization](.github/assets/visualization-waveforms.png)
+<table>
+<tr>
+<td align="center"><strong>Centered Bars</strong><br><img src=".github/assets/visualization-centered-bars.png" width="320"></td>
+<td align="center"><strong>Equalizer</strong><br><img src=".github/assets/visualization-equalizer.png" width="320"></td>
+<td align="center"><strong>Waveform</strong><br><img src=".github/assets/visualization-waveforms.png" width="320"></td>
+</tr>
+</table>
 
 ### Custom Colors
-![System Theme](.github/assets/color-options-system-theme.png)
-![Green](.github/assets/color-options-green.png)
+<table>
+<tr>
+<td align="center"><strong>System Theme</strong><br><img src=".github/assets/color-options-system-theme.png" width="320"></td>
+<td align="center"><strong>Green</strong><br><img src=".github/assets/color-options-green.png" width="320"></td>
+</tr>
+</table>
 
 ## ⌨️ Setting Up Keyboard Shortcuts
 
@@ -264,16 +305,6 @@ Check the logs for errors:
 ```bash
 journalctl --user -u super-stt -n 50
 ```
-
-### Model Selection
-Open the Super STT app → Settings → Select model
-
-## 🏗️ Architecture
-
-- **`super-stt`** - Background ML service
-- **`super-stt-app`** - Desktop configuration app
-- **`super-stt-cosmic-applet`** - Panel applet with visualizations
-- **`super-stt-shared`** - Common protocols
 
 ## 🔧 Development
 
