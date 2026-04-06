@@ -23,7 +23,10 @@ impl OpenAIModel {
         Self {
             api_key,
             model_id,
-            client: reqwest::Client::new(),
+            client: {
+                crate::install_crypto_provider();
+                reqwest::Client::new()
+            },
         }
     }
 
