@@ -62,7 +62,7 @@
         reqwest = { version = "0.13.2", default-features = false, features = [
             "json",
             "multipart",
-            "rustls",
+            "rustls-no-provider",
             "stream",
         ] }
         rubato = "0.16"
