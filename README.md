@@ -23,7 +23,7 @@ Install with our automated installer that detects your system and downloads pre-
 curl -sSL https://raw.githubusercontent.com/jorge-menjivar/super-stt/main/install.sh | bash
 ```
 
-You can also append `-- --beta` to the command to install the latest beta version.
+You can also append `-s -- --beta` to the command to install the latest beta version.
 
 ### Build from source
 
