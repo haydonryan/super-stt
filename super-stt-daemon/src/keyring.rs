@@ -1,17 +1,34 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Secure API key storage using the system keyring (e.g. GNOME Keyring, `KWallet`).
+//! Secure secret storage using the system keyring (e.g. GNOME Keyring, `KWallet`).
 //!
-//! Keys are stored with service name "super-stt" and provider-specific key names
-//! (e.g. "openai-api-key"). This keeps secrets out of config files entirely.
+//! Backend secrets are stored with service name "super-stt" under per-backend
+//! accounts `backend:<source>:<name>` (written by the settings app, read here
+//! at model load). This keeps secrets out of config files entirely.
 //!
 //! The same keyring also holds the daemon's HTTP session map under
-//! `(super-stt, stt-sessions)` — see `daemon::http_server::TokenStore` and
+//! `(super-stt, stt-sessions)` — see `daemon::http::internal::auth::tokens::TokenStore` and
 //! `get_sessions_blob`/`set_sessions_blob` below.
 
 use log::{debug, warn};
 
 const SERVICE_NAME: &str = "super-stt";
+
+/// When `SUPER_STT_KEYRING_MOCK` is set, route all keyring access to an
+/// in-memory mock store instead of the system secret service.
+///
+/// The integration tests spawn the daemon as a subprocess and CI runs
+/// headless, where there is no unlocked system keyring — touching the real
+/// secret service there blocks on an unlock prompt or fails. This must be
+/// called once at daemon startup, before any keyring access, as it sets the
+/// process-wide default credential builder.
+pub fn install_mock_if_requested() {
+    if std::env::var_os("SUPER_STT_KEYRING_MOCK").is_some() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        // Runs before the logger is initialized, so use stderr directly.
+        eprintln!("SUPER_STT_KEYRING_MOCK set — using an in-memory keyring (test/CI only)");
+    }
+}
 
 /// Keyring user (key name) under which the daemon stores all HTTP session
 /// metadata as a single JSON blob. See `TokenStore::load_persisted` for
@@ -21,88 +38,32 @@ const SERVICE_NAME: &str = "super-stt";
 /// `get_password` and mutations into a single `set_password`.
 pub const SESSIONS_KEY: &str = "stt-sessions";
 
-/// Get an API key for the given provider from the system keyring.
-///
-/// Returns `Ok(None)` if no key is stored for this provider.
+/// Keyring account for a backend secret: `backend:<source>:<name>`, where
+/// `source` is the backend's repo id (e.g. `github.com/super-stt/openai`).
+/// This is the generic per-backend secret store the settings app writes to.
+#[must_use]
+fn backend_secret_account(source: &str, name: &str) -> String {
+    format!("backend:{source}:{name}")
+}
+
+/// Read a backend secret (e.g. `OPENAI_API_KEY` for a given backend) from the
+/// keyring. Returns `Ok(None)` if not set.
 ///
 /// # Errors
 ///
 /// Returns an error if the keyring is unavailable or access fails.
-pub fn get_api_key(provider: &str) -> Result<Option<String>, String> {
-    let key_name = format!("{provider}-api-key");
-    let entry = keyring::Entry::new(SERVICE_NAME, &key_name)
-        .map_err(|e| format!("Failed to access keyring entry for {provider}: {e}"))?;
-
+pub fn get_backend_secret(source: &str, name: &str) -> Result<Option<String>, String> {
+    let account = backend_secret_account(source, name);
+    let entry = keyring::Entry::new(SERVICE_NAME, &account)
+        .map_err(|e| format!("Failed to access keyring entry for {account}: {e}"))?;
     match entry.get_password() {
-        Ok(password) => {
-            debug!("Retrieved API key for {provider} from keyring");
-            Ok(Some(password))
-        }
-        Err(keyring::Error::NoEntry) => {
-            debug!("No API key found for {provider} in keyring");
-            Ok(None)
-        }
+        Ok(password) => Ok(Some(password)),
+        Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => {
-            warn!("Failed to read API key for {provider} from keyring: {e}");
-            Err(format!("Failed to read API key for {provider}: {e}"))
+            warn!("Failed to read backend secret {account}: {e}");
+            Err(format!("Failed to read backend secret {name}: {e}"))
         }
     }
-}
-
-/// Store an API key for the given provider in the system keyring.
-///
-/// # Errors
-///
-/// Returns an error if the keyring is unavailable or the write fails.
-pub fn set_api_key(provider: &str, key: &str) -> Result<(), String> {
-    let key_name = format!("{provider}-api-key");
-    let entry = keyring::Entry::new(SERVICE_NAME, &key_name)
-        .map_err(|e| format!("Failed to access keyring entry for {provider}: {e}"))?;
-
-    entry
-        .set_password(key)
-        .map_err(|e| format!("Failed to store API key for {provider}: {e}"))?;
-
-    debug!("Stored API key for {provider} in keyring");
-    Ok(())
-}
-
-/// Delete an API key for the given provider from the system keyring.
-///
-/// Returns `Ok(())` even if no key was stored (idempotent).
-///
-/// # Errors
-///
-/// Returns an error if the keyring is unavailable or deletion fails for reasons
-/// other than the key not existing.
-pub fn delete_api_key(provider: &str) -> Result<(), String> {
-    let key_name = format!("{provider}-api-key");
-    let entry = keyring::Entry::new(SERVICE_NAME, &key_name)
-        .map_err(|e| format!("Failed to access keyring entry for {provider}: {e}"))?;
-
-    match entry.delete_credential() {
-        Ok(()) => {
-            debug!("Deleted API key for {provider} from keyring");
-            Ok(())
-        }
-        Err(keyring::Error::NoEntry) => {
-            debug!("No API key to delete for {provider}");
-            Ok(())
-        }
-        Err(e) => {
-            warn!("Failed to delete API key for {provider} from keyring: {e}");
-            Err(format!("Failed to delete API key for {provider}: {e}"))
-        }
-    }
-}
-
-/// Check whether an API key exists for the given provider without reading it.
-///
-/// # Errors
-///
-/// Returns an error if the keyring is unavailable.
-pub fn has_api_key(provider: &str) -> Result<bool, String> {
-    get_api_key(provider).map(|key| key.is_some())
 }
 
 /// Read the daemon's persisted HTTP session blob from the keyring.

@@ -32,7 +32,7 @@ use tokio::time::sleep;
 
 const DAEMON_BIN: &str = env!("CARGO_BIN_EXE_super-stt-daemon");
 const APP_NAME: &str = "super-stt gui smoke test";
-const SCOPE: &str = "client";
+const SCOPES: &[&str] = &["transcribe", "status"];
 
 fn skip_if_no_display() -> Option<&'static str> {
     let has_x11 = std::env::var_os("DISPLAY").is_some();
@@ -107,6 +107,7 @@ async fn start_daemon_no_auto_approve() -> (DaemonGuard, PathBuf) {
     let http_socket = xdg.join("stt").join("super-stt-http.sock");
 
     let child = Command::new(DAEMON_BIN)
+        .env("SUPER_STT_KEYRING_MOCK", "1") // in-memory keyring (no secret-service prompt in tests/CI)
         .env("XDG_RUNTIME_DIR", &xdg)
         .env("XDG_CONFIG_HOME", &config_home)
         .env_remove("SUPER_STT_AUTO_APPROVE") // ensure the popup path runs
@@ -181,7 +182,7 @@ async fn auth_request_dismissed_returns_user_dismissed() {
     let socket_for_task = http_socket.clone();
     let auth_task =
         tokio::spawn(
-            async move { http_client::auth_request(socket_for_task, APP_NAME, SCOPE).await },
+            async move { http_client::auth_request(socket_for_task, APP_NAME, SCOPES).await },
         );
 
     // Poll for the consent helper subprocess to appear.

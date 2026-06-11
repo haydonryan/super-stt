@@ -32,7 +32,7 @@ const DAEMON_BIN: &str = env!("CARGO_BIN_EXE_super-stt-daemon");
 /// on the developer's keyring.
 const TEST_APP_ID: AppId = AppId("widget-smoke-test");
 const TEST_APP_NAME: &str = "widget-smoke-test";
-const TEST_SCOPE: &str = "widget";
+const TEST_SCOPES: &[&str] = &["recording_events", "audio_visualization"];
 const TEST_TOPICS: &[&str] = &["recording_state", "frequency_bands"];
 
 struct DaemonGuard {
@@ -94,6 +94,7 @@ async fn spawn_daemon(_legacy_socket: &Path, http_socket: &Path) -> Child {
     std::fs::create_dir_all(&config_home).expect("create test config dir");
 
     Command::new(DAEMON_BIN)
+        .env("SUPER_STT_KEYRING_MOCK", "1") // in-memory keyring (no secret-service prompt in tests/CI)
         .env("SUPER_STT_AUTO_APPROVE", "1")
         .env("SUPER_STT_HTTP_SOCKET", http_socket)
         .env("XDG_CONFIG_HOME", &config_home)
@@ -111,7 +112,7 @@ async fn wait_for_daemon_ready(http_socket: &Path) {
     let deadline = Instant::now() + Duration::from_secs(120);
     while Instant::now() < deadline {
         if http_socket.exists()
-            && http_client::auth_request(http_socket.to_path_buf(), TEST_APP_NAME, TEST_SCOPE)
+            && http_client::auth_request(http_socket.to_path_buf(), TEST_APP_NAME, TEST_SCOPES)
                 .await
                 .is_ok()
         {
@@ -191,7 +192,7 @@ async fn subscription_recovers_from_daemon_restart() {
     // 2. Drive the subscription with tight timings so the test doesn't
     //    sit on the default backoff for tens of seconds.
     let mut config =
-        WidgetSubscriptionConfig::new(TEST_APP_ID, TEST_APP_NAME, TEST_SCOPE, TEST_TOPICS);
+        WidgetSubscriptionConfig::new(TEST_APP_ID, TEST_APP_NAME, TEST_SCOPES, TEST_TOPICS);
     config.idle_timeout = Duration::from_secs(5);
     config.initial_backoff = DEFAULT_INITIAL_BACKOFF;
     config.max_backoff = DEFAULT_MAX_BACKOFF;
@@ -278,7 +279,7 @@ async fn subscription_emits_idle_timeout_when_daemon_goes_quiet() {
     // and there are no recordings in flight, so a 2 s deadline will
     // fire before any natural traffic.
     let mut config =
-        WidgetSubscriptionConfig::new(TEST_APP_ID, TEST_APP_NAME, TEST_SCOPE, TEST_TOPICS);
+        WidgetSubscriptionConfig::new(TEST_APP_ID, TEST_APP_NAME, TEST_SCOPES, TEST_TOPICS);
     config.idle_timeout = Duration::from_secs(2);
 
     let mut stream: std::pin::Pin<
@@ -336,7 +337,7 @@ async fn subscription_recovers_from_invalid_session() {
         .expect("plant fake token in keyring");
 
     let mut config =
-        WidgetSubscriptionConfig::new(TEST_APP_ID, TEST_APP_NAME, TEST_SCOPE, TEST_TOPICS);
+        WidgetSubscriptionConfig::new(TEST_APP_ID, TEST_APP_NAME, TEST_SCOPES, TEST_TOPICS);
     config.idle_timeout = Duration::from_secs(5);
 
     let mut stream: std::pin::Pin<
