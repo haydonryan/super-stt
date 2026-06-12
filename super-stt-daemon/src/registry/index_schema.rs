@@ -4,7 +4,45 @@
 //! daemon side does not need every field — those it ignores are skipped via
 //! `serde(default)`.
 
+use semver::Version;
 use serde::Deserialize;
+
+/// The running daemon's version, used as the "client" version when checking an
+/// index's `min_client` soft floor. This is the workspace version baked in at
+/// build time.
+pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Outcome of checking the running client against an index's `min_client`
+/// soft floor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MinClientStatus {
+    /// The client meets the floor, or the comparison cannot be made (an absent
+    /// or unparseable `min_client`, or an unparseable client version). A
+    /// malformed floor must never take the registry offline.
+    Compatible,
+    /// The client is older than the index's declared minimum. The registry
+    /// stays usable; the user should be warned to update.
+    TooOld { client: String, min_client: String },
+}
+
+/// Compare a client version against an index's `min_client` soft floor using
+/// standard semver precedence. A missing or unparseable `min_client`, or an
+/// unparseable `client_version`, yields [`MinClientStatus::Compatible`] — a bad
+/// version string must not disable the registry.
+#[must_use]
+pub fn check_min_client(client_version: &str, min_client: &str) -> MinClientStatus {
+    let (Ok(client), Ok(min)) = (Version::parse(client_version), Version::parse(min_client)) else {
+        return MinClientStatus::Compatible;
+    };
+    if client < min {
+        MinClientStatus::TooOld {
+            client: client_version.to_owned(),
+            min_client: min_client.to_owned(),
+        }
+    } else {
+        MinClientStatus::Compatible
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Index {
@@ -15,6 +53,19 @@ pub struct Index {
 }
 
 impl Index {
+    /// Warn when this index's `min_client` floor is newer than the running
+    /// daemon. The registry stays usable — `min_client` is a soft floor.
+    pub fn warn_if_client_too_old(&self) {
+        if let MinClientStatus::TooOld { client, min_client } =
+            check_min_client(CLIENT_VERSION, &self.min_client)
+        {
+            log::warn!(
+                "registry index requires client >= {min_client}, but this daemon is \
+                 {client}; newer backends may fail to install or run — please update Super STT"
+            );
+        }
+    }
+
     /// Drop backends whose `id` or `entrypoint` is not a safe path component.
     /// These values become directory names / are joined onto the backends dir
     /// at install time; an absolute or traversing value would escape it. A
@@ -204,5 +255,100 @@ mod tests {
         let wasm = b.assets.wasm.as_ref().expect("wasm asset present");
         assert_eq!(wasm.url, "http://localhost:8787/dummy.wasm");
         assert_eq!(wasm.sha256.len(), 64);
+    }
+
+    #[test]
+    fn the_daemons_own_version_is_valid_semver() {
+        // The client side of the comparison must always parse, so a real
+        // floor is never silently ignored as "unparseable client".
+        assert!(
+            Version::parse(CLIENT_VERSION).is_ok(),
+            "CLIENT_VERSION {CLIENT_VERSION:?} must be valid semver"
+        );
+    }
+
+    #[test]
+    fn client_at_or_above_floor_is_compatible() {
+        for (client, floor) in [
+            ("0.1.0", "0.1.0"),        // exact floor is allowed (>=)
+            ("0.2.0", "0.1.0"),        // newer minor
+            ("1.0.0", "0.1.0"),        // newer major
+            ("0.1.4-beta.2", "0.1.0"), // current beta: 0.1.4 core > 0.1.0
+        ] {
+            assert_eq!(
+                check_min_client(client, floor),
+                MinClientStatus::Compatible,
+                "{client} should meet floor {floor}"
+            );
+        }
+    }
+
+    #[test]
+    fn client_below_floor_is_too_old() {
+        assert_eq!(
+            check_min_client("0.0.9", "0.1.0"),
+            MinClientStatus::TooOld {
+                client: "0.0.9".into(),
+                min_client: "0.1.0".into(),
+            }
+        );
+        // Standard semver: a prerelease of the floor ranks below the release.
+        assert!(matches!(
+            check_min_client("0.1.0-rc.1", "0.1.0"),
+            MinClientStatus::TooOld { .. }
+        ));
+    }
+
+    #[test]
+    fn malformed_versions_never_block_the_registry() {
+        // A bad floor or client version must degrade to Compatible, not take
+        // the whole registry offline.
+        for (client, floor) in [
+            ("0.1.4-beta.2", "not-a-version"),
+            ("0.1.4-beta.2", ""),
+            ("garbage", "0.1.0"),
+        ] {
+            assert_eq!(
+                check_min_client(client, floor),
+                MinClientStatus::Compatible,
+                "{client:?} vs {floor:?} must not block"
+            );
+        }
+    }
+
+    #[test]
+    fn current_client_meets_the_published_floor() {
+        // The value pinned in the indexer
+        // (`registry/scripts/build_index/src/index_json.rs`). The running
+        // daemon must satisfy it, or every install would warn against its own
+        // registry.
+        assert_eq!(
+            check_min_client(CLIENT_VERSION, "0.1.0"),
+            MinClientStatus::Compatible
+        );
+    }
+
+    #[test]
+    fn index_warns_only_when_too_old() {
+        // Drives the real wiring (`Index::warn_if_client_too_old` uses
+        // CLIENT_VERSION). A wildly-high floor is too old; the published floor
+        // is fine. The method logs as a side effect; we assert the underlying
+        // status it acts on.
+        let mk = |min_client: &str| Index {
+            schema_version: 1,
+            generated_at: "now".into(),
+            min_client: min_client.into(),
+            backends: vec![],
+        };
+        mk("9999.0.0").warn_if_client_too_old(); // exercises the warn branch
+        mk("0.1.0").warn_if_client_too_old(); // exercises the quiet branch
+        assert!(matches!(
+            check_min_client(CLIENT_VERSION, "9999.0.0"),
+            MinClientStatus::TooOld { .. }
+        ));
+        assert_eq!(
+            check_min_client(CLIENT_VERSION, "0.1.0"),
+            MinClientStatus::Compatible
+        );
     }
 }

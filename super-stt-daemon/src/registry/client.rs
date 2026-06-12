@@ -160,6 +160,7 @@ impl Client {
         let bytes = resp.bytes().await?;
         let mut index: Index = serde_json::from_slice(&bytes)?;
         index.retain_safe_backends();
+        index.warn_if_client_too_old();
         let cached = Cached {
             index: index.clone(),
             etag: new_etag,
@@ -178,6 +179,7 @@ impl Client {
         let file: CacheFile = serde_json::from_slice(&bytes)?;
         let mut index: Index = serde_json::from_value(file.index)?;
         index.retain_safe_backends();
+        index.warn_if_client_too_old();
         Ok(Some((index, file.etag)))
     }
 

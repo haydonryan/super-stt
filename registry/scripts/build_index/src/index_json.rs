@@ -5,7 +5,10 @@
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
-pub const MIN_CLIENT: &str = "0.6.0";
+/// Soft floor: the minimum Super STT client (daemon) version expected to
+/// understand this index. Older clients still use the registry but are warned
+/// to update. Compared with standard semver precedence on the consumer side.
+pub const MIN_CLIENT: &str = "0.1.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Index {
