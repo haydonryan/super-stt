@@ -8,11 +8,6 @@ validates the release's `backend.toml` and assets, and publishes a single
 
 End users do not interact with this directory.
 
-`registry.toml` carries a `#:schema` directive pointing at the registry schema
-published on GitHub Pages. The schema is generated from the entry types — run
-`just gen-schemas` to produce it locally (written to a gitignored
-`target/schemas/`); CI regenerates and publishes it. Do not edit it by hand.
-
 ## Submitting a backend
 
 1. Build and host your backend in your own git repo on a supported forge (currently GitHub). It must include a
@@ -49,15 +44,6 @@ published on GitHub Pages. The schema is generated from the entry types — run
    files, …) reaches the daemon without re-encoding. This is **required**: a
    release without the `backend.toml` asset is not installable and the indexer
    fails that entry.
-
-## Reserved ids
-
-These ids are reserved for the upstream maintainers and may not be claimed
-by third-party backends:
-
-- `openai`, `anthropic`, `mistral`, `deepgram`, `voxtral`, `whisper`
-- `azure`, `google`, `gcp`, `aws`, `bedrock`
-- `super-stt`, `super-stt-*`
 
 ## Removing or yanking
 
