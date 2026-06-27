@@ -206,22 +206,26 @@ jobs:
           name: coverage-lcov
           path: lcov.info
 
-      # --- main only: publish the browsable HTML report to GitHub Pages ---
-      # This repo serves Pages from the `gh-pages` branch (the model registry
-      # index.json + schemas live there), so we can't use actions/deploy-pages —
-      # that requires Pages Source = "GitHub Actions", which would break the
-      # registry deploy. Instead we push the report into a `coverage/` subtree of
-      # the same branch, leaving the registry files untouched.
-      # Served at https://jorge-menjivar.github.io/super-stt/coverage/.
-      - name: Generate HTML coverage report
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: cargo llvm-cov report --html --ignore-filename-regex 'tests/'
+      # Render the browsable report as a per-directory tree. cargo-llvm-cov's own
+      # --html index is a single flat list of every file; llvm-cov's
+      # -show-directory-coverage adds per-directory index pages, but cargo-llvm-cov
+      # (0.8) doesn't expose that flag. So capture the llvm-cov invocation it runs
+      # (-vv) and re-run it with the flag appended — no extra tooling beyond the
+      # llvm-tools already installed. Runs on PRs too, so the rendering is
+      # exercised before it ever reaches main.
+      - name: Render HTML coverage report
+        run: |
+          set -euo pipefail
+          cargo llvm-cov report --html --ignore-filename-regex 'tests/' -vv 2> llvmcov-vv.log
+          cmd=$(sed -n 's/.*Running `\(.*llvm-cov show.*\)`.*/\1/p' llvmcov-vv.log | tail -1)
+          test -n "$cmd"
+          eval "$cmd -show-directory-coverage"
+          rm -rf coverage-html && cp -r target/llvm-cov/html coverage-html
 
-      # Drop a shields.io "endpoint" JSON beside the HTML so the README badge
+      # Drop a shields.io "endpoint" JSON inside the report so the README badge
       # reads the latest line-% straight from Pages — no Gist or PAT. jq ships on
       # the runner.
       - name: Write coverage badge JSON
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           set -euo pipefail
           pct=$(cargo llvm-cov report --json --summary-only --ignore-filename-regex 'tests/' \
@@ -233,9 +237,22 @@ jobs:
           else color=red
           fi
           printf '{"schemaVersion":1,"label":"coverage","message":"%.1f%%","color":"%s"}\n' \
-            "$pct" "$color" > target/llvm-cov/html/coverage.json
-          cat target/llvm-cov/html/coverage.json
+            "$pct" "$color" > coverage-html/coverage.json
+          cat coverage-html/coverage.json
 
+      # Preview artifact so the rendered tree can be eyeballed from a PR before merge.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: coverage-html
+
+      # --- main only: publish the browsable HTML report to GitHub Pages ---
+      # This repo serves Pages from the `gh-pages` branch (the model registry
+      # index.json + schemas live there), so we can't use actions/deploy-pages —
+      # that requires Pages Source = "GitHub Actions", which would break the
+      # registry deploy. Instead we push the report into a `coverage/` subtree of
+      # the same branch, leaving the registry files untouched.
+      # Served at https://jorge-menjivar.github.io/super-stt/coverage/.
       - name: Publish coverage to gh-pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
@@ -258,7 +275,7 @@ jobs:
             # report's underscore-prefixed assets; .nojekyll disables that.
             touch .nojekyll
             rm -rf coverage
-            cp -r ../target/llvm-cov/html coverage
+            cp -r ../coverage-html coverage
             git add -A
             if git diff --cached --quiet; then
               echo "coverage report unchanged; nothing to publish"
