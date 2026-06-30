@@ -305,3 +305,190 @@ write_mode = false
     let config: DaemonConfig = toml::from_str(toml_str).expect("should deserialize");
     assert!(config.transcription.active_backend.is_none());
 }
+
+#[test]
+fn daemon_bad_theme_falls_back_preserving_rest() {
+    // A single unrecognized enum value must NOT wipe the whole config.
+    let toml_str = r#"
+[device]
+preferred_device = "cuda"
+
+[audio]
+theme = "Nonexistent"
+volume = 80
+
+[transcription]
+preferred_model = "WhisperTiny"
+write_mode = true
+recording_stop_mode = "ManualOnly"
+write_method = "Ydotool"
+"#;
+    let cfg: DaemonConfig = toml::from_str(toml_str).expect("must parse, not error");
+    assert_eq!(cfg.audio.theme, AudioTheme::default()); // bad field reset
+    assert_eq!(cfg.audio.volume, 80); // everything else preserved
+    assert_eq!(cfg.device.preferred_device, "cuda");
+    assert!(cfg.transcription.write_mode);
+    assert_eq!(
+        cfg.transcription.recording_stop_mode,
+        RecordingStopMode::ManualOnly
+    );
+    assert_eq!(cfg.transcription.write_method, WriteMethod::Ydotool);
+}
+
+#[test]
+fn daemon_bad_stop_mode_and_write_method_fall_back_preserving_rest() {
+    let toml_str = r#"
+[device]
+preferred_device = "cpu"
+
+[audio]
+theme = "Gentle"
+volume = 100
+
+[transcription]
+preferred_model = "WhisperTiny"
+write_mode = false
+recording_stop_mode = "BogusMode"
+write_method = "BogusMethod"
+"#;
+    let cfg: DaemonConfig = toml::from_str(toml_str).expect("must parse, not error");
+    assert_eq!(cfg.audio.theme, AudioTheme::Gentle); // preserved
+    assert_eq!(
+        cfg.transcription.recording_stop_mode,
+        RecordingStopMode::default()
+    );
+    assert_eq!(cfg.transcription.write_method, WriteMethod::default());
+}
+
+#[test]
+fn corrupt_daemon_config_resets_to_default() {
+    let (cfg, was_reset) = DaemonConfig::parse_or_reset("this is not ::: valid toml [");
+    assert!(was_reset, "garbage input must trigger a reset");
+    // The reset config is a valid default (proves no panic, app can start).
+    assert_eq!(cfg.audio.theme, AudioTheme::default());
+    assert_eq!(cfg.device.preferred_device, "cpu");
+}
+
+/// The committed v0.1.3 `daemon.toml` fixture (customized, not defaults). The
+/// canonical copy lives in the on-disk corpus so the release gate and these
+/// detailed assertions test the same bytes.
+fn v0_1_3_daemon_fixture() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures/configs/v0.1.3/daemon.toml");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+#[test]
+fn v0_1_3_full_daemon_config_loads_and_migrates() {
+    let (cfg, was_reset) = DaemonConfig::parse_or_reset(&v0_1_3_daemon_fixture());
+    assert!(!was_reset, "a valid v0.1.3 config must load, not reset");
+
+    // Preserved fields.
+    assert_eq!(cfg.device.preferred_device, "cuda");
+    assert_eq!(cfg.audio.theme, AudioTheme::Gentle);
+    assert_eq!(cfg.audio.volume, 80);
+    assert!(cfg.transcription.write_mode);
+    assert!(!cfg.transcription.preview_typing_enabled);
+    assert_eq!(
+        cfg.transcription.recording_stop_mode,
+        RecordingStopMode::ManualOnly
+    );
+    assert_eq!(cfg.transcription.write_method, WriteMethod::Ydotool);
+    assert!(cfg.online.allow_online_models);
+
+    // `preferred_model` widened from STTModel enum to String: the old value is
+    // retained verbatim (daemon model loader has its own fallback downstream).
+    assert_eq!(cfg.transcription.preferred_model, "WhisperLargeV3Turbo");
+
+    // Removed field dropped (no `deny_unknown_fields`); the replacement is None.
+    assert_eq!(cfg.transcription.custom_models_dir, None);
+
+    // New fields materialize at their defaults.
+    assert_eq!(cfg.transcription.preferred_provider, Provider::default());
+    assert_eq!(cfg.transcription.preferred_source, "");
+    assert_eq!(cfg.transcription.backends_dir, None);
+    assert_eq!(cfg.transcription.active_backend, None);
+    assert_eq!(cfg.transcription.primary_language, None);
+    assert!(cfg.backends.options.is_empty());
+    assert!(cfg.backends.models.is_empty());
+}
+
+#[test]
+fn v0_1_3_every_preferred_model_variant_loads() {
+    // Every STTModel serde name v0.1.3 could have written to `preferred_model`.
+    const V0_1_3_MODELS: &[&str] = &[
+        "WhisperTiny",
+        "WhisperTinyEn",
+        "WhisperBase",
+        "WhisperBaseEn",
+        "WhisperSmall",
+        "WhisperSmallEn",
+        "WhisperMedium",
+        "WhisperMediumEn",
+        "WhisperLarge",
+        "WhisperLargeV2",
+        "WhisperLargeV3",
+        "WhisperLargeV3Turbo",
+        "WhisperDistilMediumEn",
+        "WhisperDistilLargeV2",
+        "WhisperDistilLargeV3",
+        "VoxtralSmall",
+        "VoxtralMini",
+        "OpenAIWhisper1",
+        "OpenAIGpt4oTranscribe",
+        "OpenAIGpt4oMiniTranscribe",
+        "MistralVoxtralMiniTranscribeV2",
+        "DeepgramNova3",
+    ];
+    for model in V0_1_3_MODELS {
+        let toml_str = format!(
+            "[device]\npreferred_device = \"cpu\"\n\
+             [audio]\ntheme = \"Classic\"\nvolume = 100\n\
+             [transcription]\npreferred_model = \"{model}\"\nwrite_mode = false\n"
+        );
+        let (cfg, was_reset) = DaemonConfig::parse_or_reset(&toml_str);
+        assert!(!was_reset, "v0.1.3 model {model} must load, not reset");
+        assert_eq!(cfg.transcription.preferred_model, *model);
+    }
+}
+
+#[test]
+fn v0_1_3_config_reserializes_to_stable_canonical() {
+    // load() rewrites a migrated config in canonical form; that rewrite must
+    // itself be a valid, stable current config (backends empty → no HashMap
+    // ordering nondeterminism).
+    let (cfg, _) = DaemonConfig::parse_or_reset(&v0_1_3_daemon_fixture());
+    let s1 = toml::to_string_pretty(&cfg).expect("serialize migrated config");
+    let (cfg2, was_reset) = DaemonConfig::parse_or_reset(&s1);
+    assert!(!was_reset, "canonical rewrite must re-parse cleanly");
+    let s2 = toml::to_string_pretty(&cfg2).expect("serialize round-trip");
+    assert_eq!(s1, s2, "canonical form must be idempotent");
+}
+
+#[test]
+fn all_published_daemon_configs_load_cleanly() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/configs");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("fixtures/configs dir must exist") {
+        let version_dir = entry.expect("readable dir entry").path();
+        if !version_dir.is_dir() {
+            continue; // skip README.md and any other non-version files
+        }
+        let fixture = version_dir.join("daemon.toml");
+        if !fixture.exists() {
+            continue;
+        }
+        let content = std::fs::read_to_string(&fixture).expect("read daemon.toml fixture");
+        let (_, was_reset) = DaemonConfig::parse_or_reset(&content);
+        assert!(
+            !was_reset,
+            "daemon fixture {} must load cleanly (no reset)",
+            fixture.display()
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 4,
+        "expected >= 4 daemon fixtures (v0.1.0-v0.1.3), found {checked}"
+    );
+}
