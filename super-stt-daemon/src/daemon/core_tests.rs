@@ -335,6 +335,22 @@ async fn set_allow_online_models_updates_config() {
     assert!(config.online.allow_online_models);
 }
 
+/// An unknown theme name is a client error: `docs/protocol/endpoints/v1/audio_theme.md`
+/// documents `400 invalid_audio_theme`. The daemon must reject it (not silently
+/// apply the default theme and report success).
+#[tokio::test]
+async fn set_audio_theme_rejects_unknown_theme() {
+    let daemon = test_daemon().await;
+    let before = daemon.get_audio_theme();
+
+    let resp = daemon.handle_set_audio_theme("definitely-not-a-theme".to_string());
+
+    assert_eq!(resp.status, "error");
+    assert_eq!(resp.message.as_deref(), Some("invalid_audio_theme"));
+    // The rejected value must not have changed the active theme.
+    assert_eq!(daemon.get_audio_theme(), before);
+}
+
 #[tokio::test]
 async fn get_allow_online_models_returns_config_value() {
     let daemon = test_daemon().await;
@@ -1044,6 +1060,26 @@ async fn set_device_when_idle_rejects_invalid_device() {
     let response = daemon.handle_set_device("xpu".to_string()).await;
     assert_eq!(response.status, "error");
     assert_eq!(daemon.preferred_device.read().await.as_str(), "cpu");
+}
+
+/// Switching devices while an online model is loaded only records the
+/// preference — online models run remotely, so there is nothing to reload.
+/// Exercises `get_device_switch_context` (which reads the loaded model) on
+/// the reachable path, verifying it returns the model context + `is_online`.
+#[tokio::test]
+async fn set_device_with_online_model_keeps_model_and_updates_preference() {
+    let daemon = test_daemon().await;
+    // `seed_loaded_model` sets supported_devices = ["none"] → an online model.
+    seed_loaded_model(&daemon, "m", "github.com/x/online").await;
+
+    let response = daemon.handle_set_device("cuda".to_string()).await;
+
+    assert_eq!(response.status, "success", "got: {:?}", response.message);
+    assert_eq!(daemon.preferred_device.read().await.as_str(), "cuda");
+    assert!(
+        daemon.model.read().await.is_some(),
+        "online model must not be unloaded by a device switch"
+    );
 }
 
 /// `unload_active_model` is a no-op when no model is loaded — success

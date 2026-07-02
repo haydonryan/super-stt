@@ -3,13 +3,11 @@ use crate::daemon::http::state::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use parking_lot::RwLock as ParkingRwLock;
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
-use super_stt_shared::registry::events::RegistryEvent;
+
+use super::pipeline::spawn_install_pipeline;
 
 /// Request body for `POST /registry/backends/install`.
 #[derive(Deserialize)]
@@ -18,62 +16,6 @@ pub(crate) struct InstallBody {
     pub(crate) repo_url: Option<String>,
     pub(crate) local_path: Option<String>,
     pub(crate) forge: Option<super_stt_registry_types::forge::Forge>,
-}
-
-/// Ensures a spawned install/update task always reaches a terminal state. On
-/// the happy path the task calls [`InflightGuard::disarm`] after emitting its
-/// own `Completed`/`Failed` event. If the task instead unwinds (a panic in the
-/// pipeline) before that, `Drop` clears the inflight marker — so retries are not
-/// blocked by a stale `409` — and emits a `Failed` event so the client's
-/// progress UI does not spin forever.
-pub(super) struct InflightGuard {
-    inflight: Arc<ParkingRwLock<HashSet<String>>>,
-    events: Arc<crate::daemon::events::EventBus>,
-    install_id: String,
-    source: String,
-    armed: bool,
-}
-
-impl InflightGuard {
-    pub(super) fn new(
-        inflight: Arc<ParkingRwLock<HashSet<String>>>,
-        events: Arc<crate::daemon::events::EventBus>,
-        install_id: String,
-        source: String,
-    ) -> Self {
-        Self {
-            inflight,
-            events,
-            install_id,
-            source,
-            armed: true,
-        }
-    }
-
-    /// Normal completion: clear the inflight marker and suppress the
-    /// unwind-path `Failed` event.
-    pub(super) fn disarm(mut self) {
-        self.inflight.write().remove(&self.source);
-        self.armed = false;
-    }
-}
-
-impl Drop for InflightGuard {
-    fn drop(&mut self) {
-        use super_stt_shared::registry::events::{InstallError, InstallPhase};
-        if !self.armed {
-            return;
-        }
-        self.inflight.write().remove(&self.source);
-        let ev = RegistryEvent::Failed {
-            install_id: self.install_id.clone(),
-            source: self.source.clone(),
-            phase: InstallPhase::Installing,
-            error: InstallError::InstallIoError,
-        };
-        self.events
-            .publish_registry_install(serde_json::to_value(ev).unwrap_or_default());
-    }
 }
 
 /// Map a [`custom_repo::ResolveError`] to a synchronous HTTP status + body
@@ -144,14 +86,10 @@ fn parse_install_body(
     raw: Option<axum::Json<InstallBody>>,
 ) -> Result<(InstallBody, String), ErrResp> {
     let Some(axum::Json(body)) = raw else {
-        return Err(Box::new(
-            (
-                StatusCode::BAD_REQUEST,
-                [("content-type", "application/json")],
-                serde_json::json!({"error": "missing_body"}).to_string(),
-            )
-                .into_response(),
-        ));
+        return Err(Box::new(super::registry_error(
+            StatusCode::BAD_REQUEST,
+            "missing_body",
+        )));
     };
 
     // Validate exactly one of source / repo_url / local_path is present.
@@ -164,12 +102,11 @@ fn parse_install_body(
     .filter(|x| x.is_some())
     .count();
     if provided != 1 {
-        return Err(Box::new((
+        return Err(Box::new(super::registry_error_msg(
             StatusCode::BAD_REQUEST,
-            [("content-type", "application/json")],
-            serde_json::json!({"error": "bad_request", "message": "provide exactly one of source, repo_url, local_path"}).to_string(),
-        )
-            .into_response()));
+            "bad_request",
+            "provide exactly one of source, repo_url, local_path",
+        )));
     }
 
     let source_key = body
@@ -189,14 +126,10 @@ fn parse_install_body(
 fn acquire_install_inflight(s: &AppState, source_key: &str) -> Result<(), ErrResp> {
     let mut guard = s.install_inflight.write();
     if guard.contains(source_key) {
-        return Err(Box::new(
-            (
-                StatusCode::CONFLICT,
-                [("content-type", "application/json")],
-                serde_json::json!({"error": "install_in_progress"}).to_string(),
-            )
-                .into_response(),
-        ));
+        return Err(Box::new(super::registry_error(
+            StatusCode::CONFLICT,
+            "install_in_progress",
+        )));
     }
     guard.insert(source_key.to_owned());
     Ok(())
@@ -215,38 +148,27 @@ async fn resolve_install_entry(
     if let Some(ref src) = body.source {
         let Ok(index) = s.registry_client.get().await else {
             s.install_inflight.write().remove(source_key);
-            return Err(Box::new(
-                (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    [("content-type", "application/json")],
-                    serde_json::json!({"error": "registry_unavailable"}).to_string(),
-                )
-                    .into_response(),
-            ));
+            return Err(Box::new(super::registry_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "registry_unavailable",
+            )));
         };
         let Some(found) = index.backends.iter().find(|b| &b.source == src).cloned() else {
             s.install_inflight.write().remove(source_key);
-            return Err(Box::new(
-                (
-                    StatusCode::NOT_FOUND,
-                    [("content-type", "application/json")],
-                    serde_json::json!({"error": "not_found"}).to_string(),
-                )
-                    .into_response(),
-            ));
+            return Err(Box::new(super::registry_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+            )));
         };
         Ok(found)
     } else if let Some(ref repo_url) = body.repo_url {
         let Some(forge) = body.forge else {
             s.install_inflight.write().remove(source_key);
-            return Err(Box::new(
-                (
-                    StatusCode::BAD_REQUEST,
-                    [("content-type", "application/json")],
-                    serde_json::json!({"error": "bad_request", "message": "custom-repo install requires `forge`"}).to_string(),
-                )
-                    .into_response(),
-            ));
+            return Err(Box::new(super::registry_error_msg(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "custom-repo install requires `forge`",
+            )));
         };
         let client = super_stt_forge::client(forge);
         match crate::registry::custom_repo::resolve(client.as_ref(), repo_url).await {
@@ -254,14 +176,11 @@ async fn resolve_install_entry(
             Err(e) => {
                 s.install_inflight.write().remove(source_key);
                 let (status, error) = custom_repo_error_response(&e);
-                Err(Box::new(
-                    (
-                        status,
-                        [("content-type", "application/json")],
-                        serde_json::json!({"error": error, "message": e.to_string()}).to_string(),
-                    )
-                        .into_response(),
-                ))
+                Err(Box::new(super::registry_error_msg(
+                    status,
+                    error,
+                    &e.to_string(),
+                )))
             }
         }
     } else {
@@ -274,14 +193,11 @@ async fn resolve_install_entry(
             Err(e) => {
                 s.install_inflight.write().remove(source_key);
                 let (status, error) = local_dir_error_response(&e);
-                Err(Box::new(
-                    (
-                        status,
-                        [("content-type", "application/json")],
-                        serde_json::json!({"error": error, "message": e.to_string()}).to_string(),
-                    )
-                        .into_response(),
-                ))
+                Err(Box::new(super::registry_error_msg(
+                    status,
+                    error,
+                    &e.to_string(),
+                )))
             }
         }
     }
@@ -324,123 +240,12 @@ fn select_install_compat(
     let sel = compat::select(&host, entry);
     let Some(asset) = compat::to_selected_asset(entry, &sel) else {
         s.install_inflight.write().remove(source_key);
-        return Err(Box::new(
-            (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                [("content-type", "application/json")],
-                serde_json::json!({"error": "incompatible"}).to_string(),
-            )
-                .into_response(),
-        ));
+        return Err(Box::new(super::registry_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "incompatible",
+        )));
     };
     Ok((sel, asset))
-}
-
-/// Shared background pipeline spawner used by both the install and update
-/// handlers. The caller has already inserted `source_bg` into the inflight
-/// set; this function takes ownership of that responsibility via
-/// [`InflightGuard`].
-///
-/// `local_src` is `Some` only for the install handler's local-path branch;
-/// the update handler always passes `None`.
-pub(super) fn spawn_install_pipeline(
-    daemon: Arc<crate::daemon::types::SuperSTTDaemon>,
-    inflight: Arc<ParkingRwLock<HashSet<String>>>,
-    entry: crate::registry::index_schema::IndexBackend,
-    sel: crate::registry::compat::Selection,
-    install_id: String,
-    source: String,
-    local_src: Option<PathBuf>,
-) {
-    tokio::spawn(async move {
-        // Always reach a terminal state, even if the pipeline panics.
-        let guard = InflightGuard::new(
-            inflight,
-            Arc::clone(&daemon.events),
-            install_id.clone(),
-            source.clone(),
-        );
-        let backends_dir = {
-            let c = daemon.config.read().await;
-            c.transcription.backends_dir.clone().map_or_else(
-                crate::stt_models::backends::default_backends_dir,
-                PathBuf::from,
-            )
-        };
-        let cache_dir = dirs::cache_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join("super-stt/install");
-
-        let events = Arc::clone(&daemon.events);
-        let install_id_ev = install_id.clone();
-        let source_ev = source.clone();
-
-        let pipeline = crate::registry::install::Pipeline {
-            backends_dir,
-            cache_dir,
-            http: reqwest::Client::builder()
-                // Bundles can be multi-GB (e.g. a CUDA backend's multi-part
-                // archive), so allow a generous total timeout like the model
-                // download client; the connect timeout still fails fast on an
-                // unreachable host. A 5-minute total previously aborted large
-                // GPU-bundle downloads as `DownloadFailed`.
-                .timeout(Duration::from_hours(1))
-                .connect_timeout(Duration::from_secs(30))
-                .redirect(reqwest::redirect::Policy::limited(10))
-                .build()
-                .unwrap_or_default(),
-            on_progress: Arc::new(move |phase, bytes: Option<(u64, Option<u64>)>| {
-                use super_stt_shared::registry::events::{InstallPhase, RegistryEvent};
-                let (bytes_done, bytes_total) = bytes.map_or((None, None), |(d, t)| (Some(d), t));
-                let ev = RegistryEvent::Progress {
-                    install_id: install_id_ev.clone(),
-                    source: source_ev.clone(),
-                    phase: match phase {
-                        InstallPhase::Resolving => InstallPhase::Resolving,
-                        InstallPhase::Downloading => InstallPhase::Downloading,
-                        InstallPhase::Verifying => InstallPhase::Verifying,
-                        InstallPhase::Extracting => InstallPhase::Extracting,
-                        InstallPhase::Installing => InstallPhase::Installing,
-                        InstallPhase::Rescanning => InstallPhase::Rescanning,
-                    },
-                    bytes_done,
-                    bytes_total,
-                };
-                events.publish_registry_install(serde_json::to_value(ev).unwrap_or_default());
-            }),
-        };
-
-        let events2 = Arc::clone(&daemon.events);
-        let outcome = if let Some(src_dir) = local_src.as_ref() {
-            crate::registry::install::run_local(&pipeline, &entry, src_dir).await
-        } else {
-            crate::registry::install::run(&pipeline, &entry, &sel).await
-        };
-        match outcome {
-            Ok(version) => {
-                // Refresh the daemon's in-memory backend catalog.
-                daemon.refresh_backends().await;
-
-                let ev = RegistryEvent::Completed {
-                    install_id: install_id.clone(),
-                    source: source.clone(),
-                    version,
-                };
-                events2.publish_registry_install(serde_json::to_value(ev).unwrap_or_default());
-            }
-            Err((phase, error)) => {
-                let ev = RegistryEvent::Failed {
-                    install_id: install_id.clone(),
-                    source: source.clone(),
-                    phase,
-                    error,
-                };
-                events2.publish_registry_install(serde_json::to_value(ev).unwrap_or_default());
-            }
-        }
-
-        guard.disarm();
-    });
 }
 
 // ---------------------------------------------------------------------------
