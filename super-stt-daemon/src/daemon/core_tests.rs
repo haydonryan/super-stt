@@ -5,7 +5,6 @@ use crate::daemon::events::EventBus;
 use crate::download_progress::DownloadStateManager;
 use crate::input::audio::AudioProcessor;
 use crate::resource_management::ResourceManager;
-use crate::services::transcription::RealTimeTranscriptionManager;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use super_stt_shared::theme::AudioTheme;
@@ -16,16 +15,11 @@ async fn test_daemon() -> SuperSTTDaemon {
     let model = Arc::new(tokio::sync::RwLock::new(None));
     let audio_processor = Arc::new(AudioProcessor::new());
     let (shutdown_tx, _) = broadcast::channel(1);
-    let realtime_manager = Arc::new(RealTimeTranscriptionManager::new(
-        Arc::clone(&model),
-        Arc::clone(&audio_processor),
-    ));
     SuperSTTDaemon {
         model,
         audio_processor,
         shutdown_tx,
         dbus_manager: None,
-        realtime_manager,
         events: Arc::new(EventBus::new()),
         audio_theme: Arc::new(RwLock::new(AudioTheme::default())),
         volume: Arc::new(RwLock::new(100)),
@@ -103,6 +97,23 @@ async fn stop_signal_sent_on_second_press_with_default_mode() {
 }
 
 #[tokio::test]
+async fn guard_model_mutation_flags_recording_in_progress() {
+    use super_stt_shared::models::protocol::ErrorCode;
+    let daemon = test_daemon().await;
+    // Idle: the mutation is allowed.
+    assert!(daemon.guard_model_mutation("switch models").await.is_none());
+    // Recording: the unified guard rejects with the machine-readable
+    // RecordingInProgress code, independent of the human `action` wording.
+    *daemon.busy.write().await = true;
+    let resp = daemon
+        .guard_model_mutation("switch models")
+        .await
+        .expect("mutation must be rejected while recording");
+    assert_eq!(resp.status, "error");
+    assert_eq!(resp.error_code, Some(ErrorCode::RecordingInProgress));
+}
+
+#[tokio::test]
 async fn second_press_ignored_in_silence_only_mode() {
     let daemon = test_daemon().await;
     let (tx, mut rx) = tokio::sync::broadcast::channel(1);
@@ -152,10 +163,10 @@ async fn per_request_stop_mode_overrides_config() {
     *daemon.busy.write().await = true;
     *daemon.manual_stop_tx.write().await = Some(tx);
 
-    // But the request explicitly asks for manual-only mode
+    // But the request explicitly asks for manual_only mode
     let request = make_record_request(Some(serde_json::json!({
         "write_mode": false,
-        "stop_mode": "manual-only",
+        "stop_mode": "manual_only",
     })));
 
     let response = daemon.handle_command(request).await;
@@ -204,7 +215,7 @@ async fn per_request_silence_only_overrides_manual_config() {
     // But request forces SilenceOnly
     let request = make_record_request(Some(serde_json::json!({
         "write_mode": false,
-        "stop_mode": "silence-only",
+        "stop_mode": "silence_only",
     })));
 
     let response = daemon.handle_command(request).await;

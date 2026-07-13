@@ -4,7 +4,7 @@ use crate::audio::beeper::play_beep_sequence;
 use crate::daemon::types::SuperSTTDaemon;
 use log::{error, info};
 use std::sync::Arc;
-use super_stt_shared::models::protocol::DaemonResponse;
+use super_stt_shared::models::protocol::{DaemonResponse, ErrorCode};
 use super_stt_shared::theme::AudioTheme;
 
 impl SuperSTTDaemon {
@@ -14,14 +14,13 @@ impl SuperSTTDaemon {
     /// applying the default and reporting success.
     #[must_use]
     pub fn handle_set_audio_theme(&self, theme_str: String) -> DaemonResponse {
-        // `AudioTheme::from_str` maps an unrecognized name to the default (the
-        // lenient config-load convention), so match against the real theme set
-        // instead to actually reject unknown names.
-        let Some(theme) = AudioTheme::all_themes()
-            .into_iter()
-            .find(|t| t.to_string() == theme_str.to_lowercase())
-        else {
-            return DaemonResponse::error("invalid_audio_theme");
+        // `AudioTheme::from_str` rejects an unrecognized token, so it validates
+        // the input directly (no need to scan `all_themes`).
+        let Ok(theme) = theme_str.parse::<AudioTheme>() else {
+            return DaemonResponse::error_with_code(
+                ErrorCode::InvalidAudioTheme,
+                "invalid_audio_theme",
+            );
         };
         self.set_audio_theme(theme);
 

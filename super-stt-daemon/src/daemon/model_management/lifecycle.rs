@@ -32,17 +32,11 @@ impl SuperSTTDaemon {
 
     /// Re-instantiate the currently-loaded model in place (same identity) so a
     /// changed secret or option takes effect. No-op when idle. Rejected during
-    /// an active recording / real-time session.
+    /// an active recording. A real-time (WebSocket) session holds the `model`
+    /// read lock, so the reload's write-lock acquisition serializes behind it.
     pub async fn handle_reload_active_model(&self) -> DaemonResponse {
-        if *self.busy.read().await {
-            return DaemonResponse::error(
-                "Cannot reload the model during active recording. Please wait for it to finish.",
-            );
-        }
-        if !self.realtime_manager.get_active_sessions().await.is_empty() {
-            return DaemonResponse::error(
-                "Cannot reload the model during active real-time transcription sessions.",
-            );
+        if let Some(resp) = self.guard_model_mutation("reload the model").await {
+            return resp;
         }
         let current = self.model.read().await.as_ref().map(|l| {
             (
@@ -181,12 +175,9 @@ impl SuperSTTDaemon {
             .as_ref()
             .map(|l| l.definition.name.clone());
         self.unload_current_model().await;
-        // Drop the preferred model from config so a daemon restart stays idle.
-        {
-            let mut c = self.config.write().await;
-            c.transcription.preferred_model.clear();
-            c.transcription.preferred_source.clear();
-        }
+        // Drop the preferred model from config *and persist* so a daemon
+        // restart stays idle instead of reloading the just-unloaded model.
+        self.config.write().await.clear_preferred_model();
         self.events
             .publish_daemon_status_changed(serde_json::json!({
                 "status": "ready",
