@@ -125,7 +125,7 @@ Three patterns account for the majority of findings:
   doc. Chose the registry envelope over the house one since uninstall is install's
   inverse and returns a registry type.
 
-### [ ] 6. 🔴 Daemon: STT failures are masked as success
+### [x] 6. 🔴 Daemon: STT failures are masked as success
 
 - **Where:** one-shot transcribe (`daemon/transcription.rs:156-161`), the recording
   flow (`daemon/recording/mod.rs:122-138`), and the SSE terminal event
@@ -137,8 +137,15 @@ Three patterns account for the majority of findings:
   `error` event.
 - **Fix:** propagate the failure; emit the contract's `error` SSE event; never type
   error text.
+- **Resolved (`b4e67b2`, branch `refactor/audit-batch-hardening`):** `run_transcription`
+  propagates `DispatchError::Failed` as an error (no-speech is an `Ok("")` from the
+  backend, so `Failed` is a genuine failure). `record_and_transcribe` returns
+  `Result<Result<String, String>>` — outer = setup failure, inner `Err` =
+  post-capture failure — so `handle_record_internal` surfaces it as an error
+  response (HTTP emits the contract's `error` event, not `done`) and it is never
+  typed into the user's window. Updated the characterization test.
 
-### [ ] 7. 🟠 Daemon: `POST /v1/transcribe` busy-check TOCTOU on the preview slot
+### [x] 7. 🟠 Daemon: `POST /v1/transcribe` busy-check TOCTOU on the preview slot
 
 - **Where:** busy check at `transcribe.rs:203`; busy is set later in
   `recording/mod.rs:167-175`; the loser nulls the daemon-global preview sender at
@@ -148,6 +155,11 @@ Three patterns account for the majority of findings:
 - **Impact:** the winner's preview stream is silently killed.
 - **Fix:** claim the slot under the same write that sets `busy`, and clear only if
   it is still your sender.
+- **Resolved (`f511874`, branch `refactor/audit-batch-hardening`):** the shared preview
+  slot is now `PreviewSlot = Option<(u64, Sender)>`. A request claims it only when
+  free (bailing with a `recording_in_progress` error frame if another holds it) and
+  clears it only when the id is still its own, so a losing racer can neither clobber
+  nor null the winner's sender.
 
 ### [ ] 8. 🟠 Daemon: `--no-default-features --features wasm-backends` does not compile
 
@@ -437,7 +449,7 @@ Ranked by drift risk. These answer "what should be standardized or reused."
   its wording (`is_wire_invalid_session` deleted). The ad-hoc uninstall envelope was
   folded in under Tier 1 #5.
 
-### [ ] 4. 🟠 Download/verify plumbing
+### [x] 4. 🟠 Download/verify plumbing
 
 - **sha256:** `verify_sha256` at `stt_models/download.rs:64,185` compares
   case-insensitively; `registry/install.rs:432,499,602` compares `==`. One helper.
@@ -461,8 +473,25 @@ Ranked by drift risk. These answer "what should be standardized or reused."
   `stt_models/download.rs:101-193` is a third implementation with better
   conventions (tmp+rename, cancellation, sync_all). Extract
   `stream_to_file(http, url, cap, dest, on_chunk) -> sha256`.
+- **Resolved (`refactor/audit-batch-hardening`), all 5 sub-parts:**
+  a new `super-stt-registry-types::verify` hosts the shared download-verify
+  policy — `sha256_matches` (case-insensitive; fixed three case-sensitive `==`
+  compares in `install.rs`), the tar entry-safety predicate, and the unpack
+  budgets. The indexer now enforces those budgets **at publish**
+  (`validate_subprocess_parts`), so a zip-bomb that would fail every install is
+  rejected up front (regression test added). A `super-stt-forge::http` factory
+  (`short_client`/`download_client`, workspace UA) replaces the five ad-hoc
+  builders and fixes the indexer's timeout-less `Client::new()`. A
+  `super-stt-registry-types::fs::write_atomic` (tmp + fsync + rename) replaces
+  the daemon cache write and the indexer's two non-atomic `index.json` writers
+  (which also disagreed on a trailing newline — now consistent). Finally,
+  `download_stream::stream_body_to_writer` unifies the three chunk loops
+  (single-file, multi-part append, cancellable model download): a writer-based
+  helper that hashes, enforces an optional cap, honors an optional cancellation
+  predicate, and reports per-chunk progress, with the caller owning file
+  lifecycle / verify / error mapping.
 
-### [ ] 5. 🟠 Daemon connection supervisor + retry policy
+### [x] 5. 🟠 Daemon connection supervisor + retry policy
 
 - **Where:** three reconnect policies against the same daemon — shared
   `next_backoff` (doubling 1s→30s, no jitter), applet `RetryStrategy`
@@ -474,6 +503,18 @@ Ranked by drift risk. These answer "what should be standardized or reused."
   `app subscription.rs:11-101`, `handlers/daemon/mod.rs:74-208`).
 - **Fix:** promote `RetryStrategy` and a generic subscription bridge into shared;
   per-app topics/scopes/messages stay per-crate.
+- **Resolved (`refactor/audit-batch-hardening`):** the retry *policy* is unified across
+  all three clients. `RetryStrategy` (exponential + ±10% jitter) now lives in
+  `super-stt-shared::daemon::retry`; the applet uses it directly (its local copy +
+  test deleted), the shared widget-subscription reconnect loop drives it instead
+  of the jitter-less `next_backoff` doubling (so the SSE reconnect jitters too),
+  and the settings app reconnect drops its flat 5 s sleep for a
+  `reconnect_retry: RetryStrategy` field on `AppModel` (advanced on failure, reset
+  on connect). Also fixed a latent `% 0` panic in `next_delay` for sub-10 ms
+  initial delays. The generic subscription bridge (`run_widget_subscription`) was
+  already shared; both clients' remaining `subscription.rs` are thin per-crate
+  adapters (config + update→message mapping), which is by design — per the fix's
+  "per-app topics/scopes/messages stay per-crate".
 
 ### [ ] 6. 🟡 Logging init
 
