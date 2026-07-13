@@ -233,7 +233,7 @@ Three patterns account for the majority of findings:
   canonical realtime path is `GET /v1/transcribe/realtime`. Nothing left to fix;
   `RealTimeSession` and `add_audio_chunk` no longer exist in the tree.
 
-### [ ] 12. 🟠 Daemon: preview typer accounting mixes bytes and chars
+### [x] 12. 🟠 Daemon: preview typer accounting mixes bytes and chars
 
 - **Where:** `apply_simple_diff` returns bytes (`output/typer.rs:200,231`) that
   `apply_text_update` adds to char counts (`typer.rs:313-350`).
@@ -244,8 +244,17 @@ Three patterns account for the majority of findings:
   O(n²) `Vec<char>` rebuilds.
 - **Fix:** count one unit consistently end-to-end; subtract deletions; return
   `Option<usize>` instead of the sentinel.
+- **Resolved (branch `refactor/audit-app-error-surface`):** `apply_simple_diff` now
+  returns the net **char** delta (chars typed minus chars deleted) instead of a byte
+  length; the byte-vs-char reconciliation in `apply_text_update` — whose two branches
+  were identical and whose only effect was a spurious non-ASCII warn — was deleted, so
+  `actually_typed` is set once to the display text. The misleading unconditional
+  "Failed to type" debug now logs the real `type_text` error. `find_tail_match_in_text`
+  returns `Option<usize>` (byte offset) and compares char slices in place instead of
+  allocating a `Vec<char>` per position; both call sites and the tests use the
+  `Option` form (added a rightmost-match case).
 
-### [ ] 13. 🟠 App: a single failed `set_volume`/theme POST flips the app to the full-screen connection-error page
+### [x] 13. 🟠 App: a single failed `set_volume`/theme POST flips the app to the full-screen connection-error page
 
 - **Where:** volume/theme failures map to `Message::DaemonError`
   (`handlers/recording.rs:100-124`), and `view.rs:140-145` forces the Connection
@@ -253,8 +262,16 @@ Three patterns account for the majority of findings:
 - **Impact:** one trivial request failure hijacks the whole UI.
 - **Fix:** scope the error instead of escalating to connection state (the shared
   error surface, Tier 3 #11).
+- **Resolved (branch `refactor/audit-app-error-surface`):** built the shared
+  scope-tagged error slot the "one error surface" item calls for —
+  `AppModel::action_error: Option<ActionError>` with an `ErrorScope`
+  (`Customization` / `ConfigureBackend`) and an `action_error_for(scope)` accessor.
+  Volume/theme/feedback failures now raise `SettingActionFailed { Customization, .. }`
+  (rendered as an inline `error_banner` on the Customization page) instead of
+  `DaemonError`, so `daemon_status` no longer flips and the connection page is not
+  forced. The slot clears on retry, on reconnect, and on sheet open/close.
 
-### [ ] 14. 🟡 App: the app refetches all settings every 5 seconds forever
+### [x] 14. 🟡 App: the app refetches all settings every 5 seconds forever
 
 - **Where:** successful pings map to `Message::DaemonConnected`
   (`handlers/daemon/mod.rs:79-84`), whose handler unconditionally runs six settings
@@ -264,8 +281,15 @@ Three patterns account for the majority of findings:
 - **Fix:** introduce a dedicated `SettingSaved` ack and load settings only on the
   disconnected→connected transition (SSE `settings_changed` already covers
   cross-client sync).
+- **Resolved (branch `refactor/audit-app-error-surface`):** `handle_daemon_connected`
+  now runs the settings/model/language loads only on the disconnected→connected
+  transition; a periodic keep-alive ping (which also resolves to `DaemonConnected`)
+  returns `Task::none()`, so the six GETs no longer fire every tick or clobber
+  optimistic edits. The two audio save handlers stopped reusing `DaemonConnected` as
+  their success ack (they now resolve to `Action::None`), removing the per-toggle
+  refetch without needing a separate `SettingSaved` message.
 
-### [ ] 15. 🟠 App: failed secret/option saves are invisible
+### [x] 15. 🟠 App: failed secret/option saves are invisible
 
 - **Where:** all backend secret/option save failures route to log-only
   `BackendsError` (`handlers/backend.rs:103-211`); `InstallFailedToStart` is
@@ -274,6 +298,17 @@ Three patterns account for the majority of findings:
 - **Impact:** a failed API-key save shows nothing in the Configure sheet — the user
   believes the key is stored.
 - **Fix:** surface the failures and roll back optimistic state (Tier 3 #11).
+- **Resolved (branch `refactor/audit-app-error-surface`):** the four backend
+  secret/option save handlers now raise `SettingActionFailed { ConfigureBackend, .. }`
+  (rendered as an `error_banner` inside the Configure sheet) instead of the log-only
+  `BackendsError`, which is kept for catalog-load failures. `InstallFailedToStart`
+  records into a new `RegistryState::install_errors` map (mirroring `uninstall_errors`)
+  so the Browse card shows "Failed to start: …" and keeps the Install button for a
+  retry, rather than silently dropping the entry. The optimistic-state gap is closed
+  by making the preview-typing / recording-stop-mode / write-method handlers
+  confirm-then-apply: the local value is set only on the daemon ack, so a failed save
+  leaves the control on its old, correct value (and the `PreviewTypingError` handler
+  no longer abuses the transcription box). Uses the shared error slot from #13.
 
 ### [ ] 16. 🟡 App: `$HOME` sanitization corrupts messages when HOME is unset
 
