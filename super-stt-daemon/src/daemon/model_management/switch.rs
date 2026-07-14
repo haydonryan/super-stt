@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-use crate::daemon::types::{LoadedModel, SuperSTTDaemon, normalize_device};
+use crate::daemon::types::SuperSTTDaemon;
 use crate::stt_models::backends;
 use crate::stt_models::transcribe::Transcribe;
 use chrono::Utc;
@@ -109,6 +109,9 @@ impl SuperSTTDaemon {
             .write()
             .await
             .update_active_backend(dir_name.clone());
+        if let Err(e) = self.persist_config().await {
+            warn!("Failed to persist config after active-backend set: {e}");
+        }
         self.events
             .publish_daemon_status_changed(serde_json::json!({
                 "status": "active_backend_changed",
@@ -144,6 +147,9 @@ impl SuperSTTDaemon {
         self.unload_current_model().await;
         *self.active_backend.write().await = None;
         self.config.write().await.clear_active_backend();
+        if let Err(e) = self.persist_config().await {
+            warn!("Failed to persist config after active-backend clear: {e}");
+        }
         self.events
             .publish_daemon_status_changed(serde_json::json!({
                 "status": "active_backend_changed",
@@ -212,6 +218,11 @@ impl SuperSTTDaemon {
         if let Some(dir_name) = backend_dir {
             *self.active_backend.write().await = Some(dir_name.clone());
             self.config.write().await.update_active_backend(dir_name);
+            // Persist now (not just at finalize) so a subsequent load *failure*
+            // still durably records the selected backend across a restart.
+            if let Err(e) = self.persist_config().await {
+                warn!("Failed to persist config after active-backend select: {e}");
+            }
         }
 
         self.broadcast_model_loading_status(&model);
@@ -247,12 +258,7 @@ impl SuperSTTDaemon {
         definition: ModelDefinition,
         instance: Box<dyn Transcribe>,
     ) -> DaemonResponse {
-        let actual_device = normalize_device(&instance.device());
-        *self.actual_device.write().await = actual_device.clone();
-        *self.model.write().await = Some(LoadedModel {
-            definition,
-            instance,
-        });
+        let actual_device = self.finalize_loaded_model(definition, instance).await;
         {
             let mut config_guard = self.config.write().await;
             config_guard.update_preferred_model(model.clone(), provider.clone(), source.clone());

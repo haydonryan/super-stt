@@ -739,22 +739,38 @@ Ranked by drift risk. These answer "what should be standardized or reused."
 Indexer/forge/consent/cli defects live in Tier 1 #27–#31; their shared plumbing is
 Tier 2 #4/#6/#8.
 
-### [ ] 1. 🟡 Daemon: wasm/subprocess backends duplicate the `/v1` client
+### [x] 1. 🟡 Daemon: wasm/subprocess backends duplicate the `/v1` client
 
 - **Where:** ~35 lines already drifted — `wasm/mod.rs:400-443` vs
   `subprocess/mod.rs:324-361`, plus `invoke` vs `request`, `status`/`ping` vs
   `wait_for_ping`.
 - **Fix:** extract `build_transcribe_body` / `parse_transcribe_response` / a small
   `V1Transport` trait.
+- **Resolved (branch `refactor/audit-tier3-1-4`):** added a feature-agnostic
+  `stt_models::v1` module with `build_transcribe_body` and
+  `parse_transcribe_response` (the byte-identical, drifting parts); both backends'
+  `transcribe_audio` now call them. Kept the transports (`request` over a Unix
+  socket vs `invoke` through the WASM component) per-backend — they are genuinely
+  different, not duplication — so a `V1Transport` trait bought nothing over the two
+  free functions. Added unit tests for the shared build/parse.
 
-### [ ] 2. 🟠 Daemon: device-switch success/recovery duplicate ~120 lines and bypass graceful unload
+### [x] 2. 🟠 Daemon: device-switch success/recovery duplicate ~120 lines and bypass graceful unload
 
 - **Where:** `device_management.rs:236-321,361-421` vs `switch.rs:229-257`.
 - **Problem:** both bypass `unload_current_model()`'s graceful shutdown, dropping
   the model under the write lock.
 - **Fix:** one `finalize_loaded_model()`; route unload through the real path.
+- **Resolved (branch `refactor/audit-tier3-1-4`):** added
+  `finalize_loaded_model()` (normalize device → record actual device → install the
+  `LoadedModel`, returning the device label); the model-switch finalize and both
+  device-switch finalize sites (success + recovery) now call it instead of
+  re-implementing the normalize/model-set/actual-device triple. `prepare_device_switch`
+  no longer drops the model under the write lock — it routes through
+  `unload_current_model()`, so the backend is `shutdown()` outside the lock like every
+  other unload path. `unload_current_model`/`finalize_loaded_model` are
+  `pub(in crate::daemon)` so the sibling device-switch module can reach them.
 
-### [ ] 3. 🟠 Daemon: config persistence has three idioms
+### [x] 3. 🟠 Daemon: config persistence has three idioms
 
 - **Where:** self-saving `update_*` (blocking `fs::write` under the tokio config
   write lock, errors swallowed), pure mutation + `persist_config()`, and
@@ -763,8 +779,17 @@ Tier 2 #4/#6/#8.
   neither (Tier 1 #3).
 - **Fix:** make all mutators pure, persist via `persist_config()` in
   `spawn_blocking`; `save()`'s `Box<dyn Error>` → `anyhow::Result`.
+- **Resolved (branch `refactor/audit-tier3-1-4`):** all eight `update_*`/`clear_*`
+  config mutators are now pure (no `self.save()`); `persist_config_static` snapshots
+  the config under the lock, releases it, and does the blocking TOML-serialize +
+  `fs::write` in `spawn_blocking` — so no `fs::write` runs on an async worker under a
+  config lock. The six former double-write sites become single-write automatically;
+  the five sites that relied on the self-save (`update_active_backend` ×2,
+  `clear_active_backend`, `clear_preferred_model`, `update_backend_option`) gained an
+  explicit `persist_config()`, including the pre-load `active_backend` write that must
+  survive a load failure across a restart. `save()` now returns `anyhow::Result`.
 
-### [ ] 4. 🟠 Daemon: blocking work on the async runtime
+### [x] 4. 🟠 Daemon: blocking work on the async runtime
 
 - **Where:** the portal backend spawns a thread + new tokio runtime per keysym then
   joins (`xdg_portal_backend.rs:122-153`, two runtime `expect`s); enigo sleeps per
@@ -775,6 +800,28 @@ Tier 2 #4/#6/#8.
 - **Fix:** make `Simulator` async (portal already holds an async zbus connection)
   or `spawn_blocking` throughout; `handle_get_gpu_info`
   (`device_management.rs:460-468`) shows the right pattern.
+- **Resolved (branch `refactor/audit-tier3-1-4`):** the two hot paths that actually
+  stall an async worker are now off-runtime via `spawn_blocking`.
+  - **Beep** — added `play_beep_sequence_async` (the `spawn_blocking` form of the
+    spin-waiting `play_beep_sequence`); `handle_test_audio_theme` and the recording
+    start-sound (`recorder::play_start_sound_and_wait`, now `async`) await it instead
+    of blocking the worker for the sound's full duration.
+  - **Keyring** — added `{get,set,delete,has}_backend_secret_async` (`spawn_blocking`
+    wrappers); the async secret handlers (`handle_set_backend_secret`,
+    `handle_clear_backend_secret`, the `secrets.rs` list/get endpoints) and the
+    WASM model-load secret read (`instantiate::backend_headers`) now await these, so a
+    locked-keyring DBus stall no longer parks a runtime thread.
+- **Deferred (follow-up, tracked as Tier 3 #35):** the keyboard `Simulator` path
+  (portal thread-per-keysym, enigo per-chunk sleeps) and the session-store keyring
+  writes (`TokenStore::flush_snapshot`/`load_persisted`). The `Simulator` is a sync
+  state machine driven while a `!Send` `std::Mutex` guard (`actually_typed`) is held
+  across the call, so offloading it needs the larger async-`Simulator` rewrite the
+  fix lists as the primary option (the portal path already spawns its own OS thread,
+  so it does not park a runtime worker today — only wastes a runtime per keysym).
+  `flush_snapshot` is called from the sync `mint`/`revoke`; a naive detached
+  `spawn_blocking` there would race the persist ordering, and `load_persisted` is a
+  one-time startup cost — both want a dedicated single-writer persist task rather than
+  a point wrap.
 
 ### [ ] 5. 🟡 Daemon: mutex poison recovery copy-pasted ~10× in `audio/`
 
@@ -972,6 +1019,25 @@ Tier 2 #4/#6/#8.
 - The three same-named `ResolveError` enums (custom_repo / local_dir / indexer
   resolve) are distinct concepts, not duplication — at most rename the indexer's.
   Same verdict for `Host` ×2 and `VisualizationConfig` ×2: no action needed.
+
+### [ ] 35. 🟠 Daemon: remaining blocking work (split off Tier 3 #4)
+
+- **Where:** the keyboard `Simulator` path — portal `notify_keysym` spins up an OS
+  thread + a fresh current-thread tokio runtime per keysym
+  (`xdg_portal_backend.rs:122-153`), enigo sleeps per 64-char chunk /per backspace
+  batch (`enigo_backend.rs:24-50`); and the session-store keyring writes
+  (`TokenStore::flush_snapshot`/`load_persisted`, `tokens.rs`).
+- **Why split:** Tier 3 #4 offloaded the two hot paths that park a runtime worker
+  (beep, request-handler keyring). These remaining ones need structure, not a point
+  wrap: `Simulator::{type_text,backspace_n}` are sync and driven while the `!Send`
+  `actually_typed` `std::Mutex` guard is held across the call, so they want the
+  async-`Simulator` rewrite (the portal already holds an async zbus connection, so it
+  can drop the thread+runtime entirely). `flush_snapshot` is called from the sync
+  `mint`/`revoke`; correctness wants a single-writer persist task (a detached
+  `spawn_blocking` per call would race the on-disk ordering), and `load_persisted` is
+  a one-time startup blocking read.
+- **Fix:** async `Simulator` (threads the `Typer`/preview loop off the `std::Mutex`
+  guard); a dedicated session-persist task fed over a channel.
 
 ---
 
