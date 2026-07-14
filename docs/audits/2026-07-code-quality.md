@@ -352,34 +352,52 @@ Three patterns account for the majority of findings:
   the slider's `on_release` fires the single `set_volume` POST. A whole drag is one
   request instead of hundreds.
 
-### [ ] 20. 🟡 App: language client encodes `source` but interpolates `model` raw
+### [x] 20. 🟡 App: language client encodes `source` but interpolates `model` raw
 
 - **Where:** `daemon/client/v1/settings/language.rs:67,89,116`.
 - **Impact:** a model name containing `/` produces a malformed path.
 - **Fix:** percent-encode both path segments.
+- **Resolved (branch `refactor/audit-tier1-20-23`):** all three
+  `/backends/{source}/models/{model}/language` builders now `enc(&model)` as well as
+  `enc(&source)`, so a `/` (or any reserved char) in a model name yields a valid path.
 
-### [ ] 21. 🟠 Applet: empty `frequency_bands` panics/degenerates the bar renderers
+### [x] 21. 🟠 Applet: empty `frequency_bands` panics/degenerates the bar renderers
 
 - **Where:** `equalizer.rs:60` / `centered_bars.rs:59`.
 - **Problem:** `b64_to_f32_vec` degrades malformed input to an empty vec, then
   `bars_to_show - 1` underflows a usize (debug panic; ~1.8e19 spacing in release).
   Same class as the #268 fix.
 - **Fix:** guard `bands_to_show == 0` and use `saturating_sub`.
+- **Resolved (branch `refactor/audit-tier1-20-23`):** both renderers now
+  early-return when `bars_to_show == 0` (which also avoids the `width / 0.0`
+  degeneration) and use `saturating_sub(1)` for the centering width. `waveform.rs`
+  was checked and is safe — its `bands_to_show - 1` sits inside the
+  `0..bands_to_show` loop, never reached at zero.
 
-### [ ] 22. 🟡 Applet: `launch_app`/`open_github` never reap children
+### [x] 22. 🟡 Applet: `launch_app`/`open_github` never reap children
 
 - **Where:** `app/update.rs:348-389`.
 - **Problem:** zombies accumulate for the session-long applet; `launch_app` also
   probes hardcoded `./target/{debug,release}/` dev paths relative to the panel
   process CWD.
 - **Fix:** reap spawned children (or detach properly); drop the dev-path probing.
+- **Resolved (branch `refactor/audit-tier1-20-23`):** added a `spawn_detached`
+  helper that reaps each child in a detached thread, and routed both `open_github`
+  and `launch_app` through it. The two `./target/{debug,release}` dev paths (and the
+  redundant `which` probe — `Command::new("super-stt-app")` already searches `PATH`)
+  are gone; `launch_app` now tries PATH, `/usr/local/bin`, `/usr/bin`.
 
-### [ ] 23. 🟡 Applet: the "connection health watchdog" doesn't exist
+### [x] 23. 🟡 Applet: the "connection health watchdog" doesn't exist
 
 - **Where:** `last_udp_data` is written four times, read nowhere (`app/mod.rs:45`,
   `update.rs:47,57,229-231,256`).
 - **Problem:** the comments advertise a safety net that was removed.
 - **Fix:** implement the watchdog or delete the field and comments.
+- **Resolved (branch `refactor/audit-tier1-20-23`):** deleted the write-only
+  `last_udp_data` field, its initializer, the four writes, and the "connection health
+  watchdog" comment (plus the now-unused `Instant` import in `init.rs`). The
+  self-healing event subscription is the real reconnection path; there is no separate
+  watchdog to advertise.
 
 ### [x] 24. 🟠 Shared: `GET /audio_themes` violates the documented wire form
 
