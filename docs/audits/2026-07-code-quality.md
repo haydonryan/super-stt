@@ -823,30 +823,72 @@ Tier 2 #4/#6/#8.
   one-time startup cost — both want a dedicated single-writer persist task rather than
   a point wrap.
 
-### [ ] 5. 🟡 Daemon: mutex poison recovery copy-pasted ~10× in `audio/`
+### [x] 5. 🟡 Daemon: mutex poison recovery copy-pasted ~10× in `audio/`
 
 - **Where:** `recorder.rs`, `processing.rs`, `device.rs`, while the rest of the
   crate uses parking_lot.
 - **Fix:** switch audio to `parking_lot::Mutex` (cpal callbacks are sync-safe with
   it) or one `lock_recover` helper.
+- **Resolved (branch `refactor/audit-tier3-5-8`):** switched the three audio
+  mutexes (`audio_buffer`, `recording_state`, `audio_device_cache`) from
+  `std::sync::Mutex` to `parking_lot::Mutex`. `parking_lot` guards carry no poison
+  state, so all 11 `match .lock() { Ok => .., Err(poisoned) => poisoned.into_inner() }`
+  recovery blocks collapse to a direct `.lock()` — the cpal real-time callbacks stay
+  sync-safe. The type leaks through `get_audio_buffer_ref` into the preview loop, so
+  `RecordingSession::preview_buffer` and its one lock site moved too; the sibling
+  `actually_typed` stays `std::sync::Mutex` (not shared with a callback). Dropped the
+  now-false `# Panics` (poison) doc on `check_output_device_health`.
 
-### [ ] 6. 🟡 Daemon: inflight cleanup hand-rolled in 8+ places despite an RAII guard
+### [x] 6. 🟡 Daemon: inflight cleanup hand-rolled in 8+ places despite an RAII guard
 
 - **Where:** `install_inflight.write().remove()` on every error path
   (`install.rs:149-241`, `update.rs:70-168`) while `pipeline.rs`'s `InflightGuard`
   is only used inside the spawned task.
 - **Fix:** construct the guard at insert.
+- **Resolved (branch `refactor/audit-tier3-5-8`):** added `InflightMarker` in
+  `pipeline.rs` — a lightweight RAII guard that inserts the source (atomic
+  check+insert under one write lock) and removes it on `Drop`, but emits **no**
+  event (the synchronous phases fail with plain HTTP errors, not `Failed` install
+  events — unlike the pipeline's event-emitting `InflightGuard`). Phase 2 of both
+  handlers now returns the marker; the fallible phases (and the update no-op early
+  return) just `return`, so the marker's `Drop` cleans up. The happy path calls
+  `marker.defuse()` after spawning, handing removal duty to the pipeline's
+  `InflightGuard`. This deletes all 11 hand-rolled `install_inflight.write().remove()`
+  calls; the now-unused `source_key`/`source`/`&AppState` params drop from the phase
+  helpers.
 
-### [ ] 7. 🟡 Daemon: settings handlers repeat a 25-line mutate→persist→respond block 6×
+### [x] 7. 🟡 Daemon: settings handlers repeat a 25-line mutate→persist→respond block 6×
 
 - **Where:** `settings_handlers.rs:12-250`.
 - **Fix:** one `set_config_field` helper (also prevents Tier 1 #3 recurrences).
+- **Resolved (branch `refactor/audit-tier3-5-8`):** added `set_config_field`
+  (lock → mutate closure → `persist_config`, returning the persist `Result`) and a
+  `settings_saved` response helper (folds the persist outcome into the response,
+  appending `(save failed: {e})` and logging a warning on failure while keeping the
+  in-memory change). The four simple setters — preview typing, recording stop mode,
+  write method, custom models dir — now route through both, dropping their
+  hand-rolled `{ lock; mutate }` + `persist_config().await` + Ok/Err match.
+  `handle_set_allow_online_models` keeps its explicit mutate/persist: it interleaves
+  an async online→local revert between the mutate and the persist and builds a
+  revert-aware message, so it doesn't fit the couple-mutate-and-persist shape.
 
-### [ ] 8. 🟠 Daemon: SSE fan-out uses unbounded channels
+### [x] 8. 🟠 Daemon: SSE fan-out uses unbounded channels
 
 - **Where:** `http/v1/events.rs:75-76,164-190`.
 - **Problem:** a stalled reader buffers `frequency_bands` frames without bound.
 - **Fix:** bounded channel; drop visualization frames on overflow.
+- **Resolved (branch `refactor/audit-tier3-5-8`):** the per-connection `/events`
+  channel is now `mpsc::channel(SSE_CHANNEL_CAPACITY = 256)` (was
+  `unbounded_channel`), read out via `ReceiverStream`. A shared `try_emit_sse_event`
+  helper does `try_send`: a full channel drops the frame (the reader is stalled —
+  shed it, logging a warn) and only a `Closed` channel tears the forwarder down.
+  Keepalive uses the same `try_send` (drop the heartbeat when full; cancel only on
+  `Closed`); the `subscribed` ack and `revoked` frame go through it too. `frequency_bands`
+  is the dominant volume, so those are what overflow drops in practice; the
+  `/transcribe` stream keeps its unbounded channel (bounded per-recording lifetime,
+  non-droppable `preview`/`done`/`error` frames). Frame formatting is now a shared
+  `format_sse_frame` used by both the bounded fan-out and the unbounded
+  `emit_sse_event`.
 
 ### [ ] 9. 🟡 Daemon: minor items
 
