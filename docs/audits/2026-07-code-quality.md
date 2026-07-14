@@ -310,31 +310,47 @@ Three patterns account for the majority of findings:
   leaves the control on its old, correct value (and the `PreviewTypingError` handler
   no longer abuses the transcription box). Uses the shared error slot from #13.
 
-### [ ] 16. 🟡 App: `$HOME` sanitization corrupts messages when HOME is unset
+### [x] 16. 🟡 App: `$HOME` sanitization corrupts messages when HOME is unset
 
 - **Where:** `err.replace(&std::env::var("HOME").unwrap_or_default(), "$HOME")`
   (`handlers/model.rs:120-124`).
 - **Problem:** an empty pattern inserts `$HOME` at every char boundary.
 - **Fix:** skip the replacement when the variable is missing or empty.
+- **Resolved (branch `refactor/audit-app-tier1-16-19`):** extracted a pure
+  `sanitize_home(err, home)` that returns the message unchanged when `home` is empty
+  (only folding + capping to 200 chars when it is set) and unit-tested the
+  empty-HOME regression, the fold, and the cap.
 
-### [ ] 17. 🟡 App: `handle_daemon_events` returns from inside the loop
+### [x] 17. 🟡 App: `handle_daemon_events` returns from inside the loop
 
 - **Where:** `handlers/daemon/events.rs:16-34`.
 - **Problem:** drops all events after the first that yields a task. Latent today
   (producers wrap singletons) but the API takes a `Vec`.
 - **Fix:** collect tasks across the whole batch and return them together.
+- **Resolved (branch `refactor/audit-app-tier1-16-19`):** the loop now pushes each
+  event's task into a `Vec`, processes the whole batch (so `last_event_timestamp`
+  advances past every event), appends the final `update_title()`, and returns
+  `Task::batch(tasks)`.
 
-### [ ] 18. 🟡 App: reconnect force-navigates to Customization
+### [x] 18. 🟡 App: reconnect force-navigates to Customization
 
 - **Where:** `handlers/daemon/mod.rs:117-129`, contradicting the documented Models
   launch page (`core/app/init.rs:18-24`).
 - **Impact:** yanks mid-flow users to another page on every daemon restart.
 - **Fix:** don't navigate on reconnect.
+- **Resolved (branch `refactor/audit-app-tier1-16-19`):** deleted the
+  reconnect-time nav-activate block (and the now-unused `Page` import); the launch
+  page stays Models (set in `init.rs`) and the user's current page is untouched
+  across a daemon restart.
 
-### [ ] 19. 🟡 App: volume slider fires one POST per drag tick
+### [x] 19. 🟡 App: volume slider fires one POST per drag tick
 
 - **Where:** `ui/views/customization.rs:56`, `handlers/recording.rs:120-126`.
 - **Fix:** commit on `on_release` or debounce.
+- **Resolved (branch `refactor/audit-app-tier1-16-19`):** the slider's drag callback
+  (`VolumeChanged`) now only updates the local value; a new `VolumeCommit` wired to
+  the slider's `on_release` fires the single `set_volume` POST. A whole drag is one
+  request instead of hundreds.
 
 ### [ ] 20. 🟡 App: language client encodes `source` but interpolates `model` raw
 
