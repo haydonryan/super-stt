@@ -58,6 +58,9 @@ Content-Type: application/json
 | 401  | `invalid_session`            | Token unknown / expired / `exe_changed`                       |
 | 403  | `scope_denied`               | Token lacks the `settings` scope                              |
 
+An unknown `mode` is **rejected** (`400`) and leaves the stored setting unchanged —
+the write is not silently coerced to the default.
+
 ## `GET /recording_stop_mode`
 
 **Request:**

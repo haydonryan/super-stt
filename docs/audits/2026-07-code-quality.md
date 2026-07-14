@@ -413,14 +413,18 @@ Three patterns account for the majority of findings:
   `available_audio_themes` returns the documented lowercase form; the smoke test
   now pins the exact value list.
 
-### [ ] 25. 🟡 Registry-types: `SubprocessAsset` with `file = ""` plus valid `parts` passes `Manifest::parse`
+### [x] 25. 🟡 Registry-types: `SubprocessAsset` with `file = ""` plus valid `parts` passes `Manifest::parse`
 
 - **Where:** the XOR guard treats empty as absent
   (`super-stt-registry-types/src/manifest.rs:528-534`), but `release_files()`
   returns `[""]` and `is_multipart()` is false (`manifest.rs:202-213`).
 - **Fix:** normalize empty→`None` in parse.
+- **Resolved (branch `refactor/audit-tier1-25-29`):** `Manifest::parse` now takes
+  `&mut m` and normalizes an empty `file` string to `None` before the XOR check, so
+  `file = ""` + valid `parts` yields `file: None` / `is_multipart(): true` /
+  `release_files(): [parts…]` instead of a `[""]` filename. Added a regression test.
 
-### [ ] 26. 🟡 Shared: `cmd_record` silently drops an invalid `stop_mode`
+### [x] 26. 🟡 Shared: `cmd_record` silently drops an invalid `stop_mode`
 
 - **Where:** `.ok()` at `protocol/dispatch.rs:123-128`, while
   `set_recording_stop_mode` 400s the same input (`dispatch.rs:237-248`); the
@@ -428,8 +432,17 @@ Three patterns account for the majority of findings:
   and caller-less.
 - **Fix:** one unknown-value policy across both paths (house rule:
   fallback-to-default); delete the compat branch.
+- **Resolved (branch `refactor/audit-tier1-25-29`):** both paths now **reject** a
+  present-but-unknown value with an error and change nothing —
+  `cmd_set_recording_stop_mode` keeps its documented `400 invalid_recording_stop_mode`
+  (leaving the stored setting untouched), and `cmd_record` (made fallible) rejects an
+  invalid override instead of silently dropping it to `None`. This is the single
+  unknown-value policy the item asked for; per-request state-changing writes validate
+  strictly rather than silently coercing to the default. The dead
+  `disable_silence_detection` compat branch and its test are gone; new tests pin the
+  reject-on-invalid behavior on both paths.
 
-### [ ] 27. 🔴 Forge: `ForgeClient::download` buffers unbounded bodies *(security)*
+### [x] 27. 🔴 Forge: `ForgeClient::download` buffers unbounded bodies *(security)*
 
 - **Where:** `github.rs:143-147` reads the whole body into memory;
   `custom_repo.rs` size-checks only declared (attacker-controlled) metadata before
@@ -437,18 +450,32 @@ Three patterns account for the majority of findings:
 - **Fix:** add `max_bytes` to the trait and stream with an accumulating check — the
   pattern already exists at `registry/install.rs:633-650` and
   `indexer/src/assets.rs:144-171`.
+- **Resolved (branch `refactor/audit-tier1-25-29`):** `ForgeClient::download` gained a
+  `max_bytes` param; the GitHub adapter now streams `resp.chunk()` with a running
+  total and aborts with the new `ForgeError::TooLarge` the instant the body would
+  exceed the cap (no full buffering). The one production caller (`custom_repo.rs`
+  manifest fetch) passes `MAX_MANIFEST_BYTES` and maps `TooLarge` →
+  `ManifestTooLarge`, retiring the after-the-fact `len()` check. Added a
+  cap-rejection test.
 
-### [ ] 28. 🟠 Indexer: one malformed `repo` string aborts the entire index build
+### [x] 28. 🟠 Indexer: one malformed `repo` string aborts the entire index build
 
 - **Where:** `RepoRef::parse(&entry.repo)?` (`indexer/src/main.rs:96`).
 - **Problem:** bypasses the carry-forward resilience path every other per-entry
   failure uses.
 - **Fix:** carry the entry forward like the rest.
+- **Resolved (branch `refactor/audit-tier1-25-29`):** a `RepoRef::parse` error is now
+  turned into a `BuildFailure` and routed through the same per-entry carry-forward
+  `match` as every other failure, instead of `?`-propagating out of the build loop.
 
-### [ ] 29. 🟡 Indexer: multi-GB temp parts leak on mid-loop errors
+### [x] 29. 🟡 Indexer: multi-GB temp parts leak on mid-loop errors
 
 - **Where:** `indexer/src/main.rs:246-262` — `?` returns before the cleanup loop.
 - **Fix:** use a `TempDir`/`Drop` guard.
+- **Resolved (branch `refactor/audit-tier1-25-29`):** a `TempParts` RAII guard owns the
+  downloaded part paths (registered *before* each download) and removes them all on
+  drop, so an early `?` from `resolve_url` / `download_to_file` / validation no longer
+  leaks the parts already fetched. The explicit post-loop cleanup is gone.
 
 ### [ ] 30. 🔴 Consent: the auto-approve env path ships in release builds *(security)*
 

@@ -88,16 +88,38 @@ fn record_command_wait_defaults_to_false() {
 }
 
 #[test]
-fn record_command_backward_compat_disable_silence_detection() {
+fn record_command_invalid_stop_mode_is_rejected() {
+    // Tier 1 #26: a present-but-unknown stop_mode is a bad request — reject it
+    // (not silently drop to None), consistent with the SET path.
     let request = make_request(
         "record",
         Some(json!({
             "write_mode": false,
-            "disable_silence_detection": true,
+            "stop_mode": "not_a_real_mode",
         })),
     );
-    let command = Command::try_from(request).expect("record command should parse");
-    match command {
+    assert!(Command::try_from(request).is_err());
+}
+
+#[test]
+fn set_recording_stop_mode_invalid_is_rejected() {
+    // Tier 1 #26: an unknown mode returns an error and leaves the stored
+    // setting unchanged, rather than silently persisting the default.
+    let request = make_request(
+        "set_recording_stop_mode",
+        Some(json!({ "mode": "not_a_real_mode" })),
+    );
+    assert!(Command::try_from(request).is_err());
+}
+
+#[test]
+fn record_command_valid_stop_mode_parses() {
+    // A well-formed override still resolves to the parsed value.
+    let request = make_request(
+        "record",
+        Some(json!({ "write_mode": false, "stop_mode": "manual_only" })),
+    );
+    match Command::try_from(request).expect("record command should parse") {
         Command::Record { stop_mode, .. } => {
             assert_eq!(stop_mode, Some(RecordingStopMode::ManualOnly));
         }
