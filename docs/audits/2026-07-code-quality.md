@@ -890,7 +890,7 @@ Tier 2 #4/#6/#8.
   `format_sse_frame` used by both the bounded fan-out and the unbounded
   `emit_sse_event`.
 
-### [ ] 9. 🟡 Daemon: minor items
+### [x] 9. 🟡 Daemon: minor items
 
 - Five identical `emit_*` DBus wrappers (`services/dbus.rs:131-198`).
 - Dead spinner scaffolding in `transcribe_with_spinner`
@@ -899,15 +899,47 @@ Tier 2 #4/#6/#8.
 - Keyring sessions-blob accessors bypass `kv_get`/`kv_set` with a second mock
   mechanism (`keyring.rs:157-247`).
 - Stringly `Result<_, String>` in keyring/download-progress.
+- **Resolved (branch `refactor/audit-tier3-9-11`):**
+  - The five `emit_*` DBus wrappers collapse to an `emit_signal!` macro (they
+    differed only in the signal method + event type; a generic async helper can't
+    express it — the closure would return a future borrowing the emitter). The
+    repeated object path is now an `OBJECT_PATH` const, reused by `.at(..)` too.
+  - `transcribe_with_spinner` → `transcribe_final`: the spinner apparatus was
+    entirely dead (`spinner_handle` never assigned, cancel/counter never read), and
+    the `_typer`/`_write_mode` params were unused — all removed.
+  - Deleted the one-use `PipeExt` trait; the single `.pipe(Ok)` is now `Ok(..)`.
+- **Deferred (follow-up, Tier 3 #36):** the keyring sessions-blob → `kv_get`/`kv_set`
+  unification and the `Result<_, String>` → typed-error conversion. The first changes
+  session-persistence behavior under `SUPER_STT_KEYRING_MOCK` (the sessions blob would
+  move from the keyring-crate mock to the process-global `mock_store`), which the
+  `http_smoke_full` restart test exercises — wants its own verified change. The second
+  is a type-system change rippling through every keyring/download-progress caller
+  (including the async wrappers added in Tier 3 #4) for marginal benefit; better as a
+  focused pass than bundled here.
 
-### [ ] 10. 🟡 App: group the flat ~90-variant `Message` enum into sub-enums
+### [x] 10. 🟡 App: group the flat ~90-variant `Message` enum into sub-enums
 
 - **Where:** routing is declared twice — nine `matches!` lists in
   `core/app/update.rs:21-211` + per-handler `_ => Task::none()` catch-alls.
 - **Problem:** a forgotten variant silently no-ops.
 - **Fix:** sub-enums make dispatch exhaustive and delete both lists.
+- **Resolved (branch `refactor/audit-tier3-9-11`):** the flat 103-variant `Message`
+  is now 12 per-area sub-enums (`ShellMessage`, `DaemonMessage`, `ModelMessage`,
+  `ModelsPageMessage`, `DeviceMessage`, `DownloadMessage`, `PreviewTypingMessage`,
+  `RecordingStopModeMessage`, `WriteMethodMessage`, `BackendMessage`, `LanguageMessage`,
+  `RecordingMessage`) wrapped by `Message`, plus the still-top-level `SettingActionFailed`
+  (handled inline). `dispatch` is one exhaustive `match` (the twelve `matches!` lists are
+  gone), and each `handle_*_messages` takes and `match`es its own sub-enum — so all the
+  top-level `_ => Task::none()` catch-alls are deleted and a forgotten variant is a compile
+  error at both ends. `From<XMessage> for Message` impls exist for ergonomics. Now that the
+  group name carries the context, the three redundant-prefix settings enums shed it
+  (`PreviewTypingMessage::Toggled`, `RecordingStopModeMessage::Changed`, etc.). The few
+  intra-group delegate sub-handlers (daemon, models_page, download) keep a narrow
+  `_ => Task::none()` since they each receive the full sub-enum but handle a subset — the
+  exhaustiveness guarantee lives at the sub-enum boundary, which is what silently no-op'd
+  before.
 
-### [ ] 11. 🟠 App: one error surface
+### [x] 11. 🟠 App: one error surface
 
 - **Where:** four ad-hoc patterns today — transcription-box hijack, log-only,
   invisible, escalate-to-connection-page (Tier 1 #13/#15).
@@ -915,6 +947,26 @@ Tier 2 #4/#6/#8.
   `ui/views/models/active.rs:437-445`) is the good template; add a shared
   scope-tagged error slot rendered per page, and roll back optimistic state on
   failure.
+- **Resolved (branch `refactor/audit-tier3-9-11`):** generalized the existing
+  scope-tagged `action_error` slot. `ErrorScope` gained `Recording` and
+  `InputSimulation`; the Recording and Input Simulation pages now render the shared
+  `error_banner` (via `action_error_for(scope)`) like Customization already did. Added
+  `set_action_error`/`clear_action_error` helpers (scope-safe: clearing one page's
+  banner can't wipe another's). Converged the ad-hoc error paths onto it:
+  - **Log-only → banner:** the preview-typing / stop-mode / write-method save errors
+    and the language-save error now populate their page's banner instead of only
+    `log::warn!`.
+  - **Transcription-box hijack → Models card:** `DeviceError` and `DownloadError` set
+    `ModelOperationState::Error` (the good template) instead of overwriting the
+    Recording page's `transcription_text`.
+- **Deferred (follow-up, Tier 3 #37):** rolling back optimistic state on failure
+  (audio theme / volume / select-backend / staged-device). Doing it right needs a
+  captured previous value threaded through a per-setting success/failure message
+  (the failure arrives as a separate message that doesn't carry the prior value), and
+  the drift self-heals on the next reconnect refetch (`VolumeLoaded` /
+  `CurrentAudioThemeLoaded` / `ActiveBackendLoaded`), so it's a refinement rather than
+  a correctness gap. The `escalate-to-connection-page` behavior (whole-UI takeover on
+  `DaemonStatus::Error`) is intentional for a lost daemon and stays.
 
 ### [x] 12. 🟡 App: `clear_loaded_model()` helper for the copy-pasted current-model triple
 
@@ -1080,6 +1132,37 @@ Tier 2 #4/#6/#8.
   a one-time startup blocking read.
 - **Fix:** async `Simulator` (threads the `Typer`/preview loop off the `std::Mutex`
   guard); a dedicated session-persist task fed over a channel.
+
+### [ ] 36. 🟡 Daemon: keyring cleanup deferred from Tier 3 #9
+
+- **Where:** the sessions-blob accessors (`keyring.rs` `get_sessions_blob`/
+  `set_sessions_blob`) build `keyring::Entry` directly and rely on
+  `install_mock_if_requested` (the keyring-crate credential-builder mock), a second
+  mock mechanism alongside the process-global `mock_store` that `kv_get`/`kv_set` use.
+  Plus the stringly `Result<_, String>` across keyring and download-progress.
+- **Why split:** routing the sessions blob through `kv_get`/`kv_set` changes its
+  behavior under `SUPER_STT_KEYRING_MOCK` (persists in-process via `mock_store`
+  instead of the isolated-per-`Entry` keyring mock), which the `http_smoke_full`
+  restart test exercises — a verified change, not a drive-by. Typed errors ripple
+  through every keyring/download-progress caller (incl. the Tier 3 #4 async wrappers)
+  for marginal benefit.
+- **Fix:** route sessions through `kv_get`/`kv_set` and delete
+  `install_mock_if_requested`; introduce a small keyring error enum.
+
+### [ ] 37. 🟡 App: roll back optimistic UI state on save failure (split off Tier 3 #11)
+
+- **Where:** the optimistic-then-banner sites — audio theme / feedback
+  (`handlers/recording.rs`), volume commit (same), `SelectBackend` /
+  `LoadStagedModel` staged device (`handlers/models_page/mod.rs`).
+- **Why split:** Tier 3 #11 landed the "one error surface" (scoped banners + Models
+  card, no more transcription hijack or log-only). Rollback is separable: the failure
+  arrives as its own message that doesn't carry the pre-optimistic value, so each site
+  needs a captured previous value threaded through a per-setting success/failure
+  message (and volume needs a stored last-committed value, since the drag already
+  overwrote `self.volume`). The drift also self-heals on the next reconnect refetch
+  (`VolumeLoaded`/`CurrentAudioThemeLoaded`/`ActiveBackendLoaded`).
+- **Fix:** capture the prior value at the optimistic set and restore it in a
+  dedicated failure message that also raises the banner.
 
 ---
 

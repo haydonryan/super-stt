@@ -11,7 +11,7 @@ use subscription::{UdpSubscriptionId, audio_events_subscription};
 
 use crate::daemon::backends::BackendInfo;
 use crate::state::{AudioTheme, ContextPage, DaemonStatus, MenuAction, RecordingStatus};
-use crate::ui::messages::Message;
+use crate::ui::messages::{DaemonMessage, Message, ModelsPageMessage, ShellMessage};
 use cosmic::app::context_drawer;
 use cosmic::iced::Subscription;
 use cosmic::prelude::*;
@@ -209,6 +209,21 @@ impl AppModel {
             .filter(|e| e.scope == scope)
             .map(|e| e.message.as_str())
     }
+
+    /// Park a failed action in the single scope-tagged banner slot. The one
+    /// slot is deliberate — only one page is visible at a time, and
+    /// [`action_error_for`](Self::action_error_for) gates rendering by scope.
+    pub fn set_action_error(&mut self, scope: crate::state::ErrorScope, message: String) {
+        self.action_error = Some(crate::state::ActionError { scope, message });
+    }
+
+    /// Clear the banner only if it currently belongs to `scope`, so retrying or
+    /// succeeding at one page's action can't wipe another page's pending error.
+    pub fn clear_action_error(&mut self, scope: crate::state::ErrorScope) {
+        if self.action_error.as_ref().is_some_and(|e| e.scope == scope) {
+            self.action_error = None;
+        }
+    }
 }
 
 /// Create a COSMIC application from the app model
@@ -312,11 +327,11 @@ impl cosmic::Application for AppModel {
             ),
             // Periodic connection monitoring
             cosmic::iced::time::every(std::time::Duration::from_secs(PING_INTERVAL_SECS))
-                .map(|_| Message::PingTimeout),
+                .map(|_| Message::Daemon(DaemonMessage::PingTimeout)),
             // Periodic GPU inventory/memory refresh (gated on connection in the
             // handler, so it's a no-op while disconnected).
             cosmic::iced::time::every(std::time::Duration::from_secs(GPU_POLL_INTERVAL_SECS))
-                .map(|_| Message::RefreshGpuInfo),
+                .map(|_| Message::ModelsPage(ModelsPageMessage::RefreshGpuInfo)),
         ])
     }
 
@@ -347,7 +362,9 @@ impl menu::action::MenuAction for MenuAction {
 
     fn message(&self) -> Self::Message {
         match self {
-            MenuAction::About => Message::ToggleContextPage(ContextPage::About),
+            MenuAction::About => {
+                Message::Shell(ShellMessage::ToggleContextPage(ContextPage::About))
+            }
         }
     }
 }

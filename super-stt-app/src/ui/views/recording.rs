@@ -5,9 +5,11 @@ use cosmic::iced_widget::row;
 use cosmic::widget::{self, button, settings, text};
 use super_stt_shared::models::recording_stop_mode::RecordingStopMode;
 
-use super::common::page_layout;
+use super::common::{error_banner, page_layout};
 use crate::state::RecordingStatus;
-use crate::ui::messages::Message;
+use crate::ui::messages::{
+    Message, PreviewTypingMessage, RecordingMessage, RecordingStopModeMessage,
+};
 
 /// Recording settings section: stop mode + preview typing
 fn settings_section(
@@ -28,7 +30,7 @@ fn settings_section(
             settings::item::builder("Stop Mode")
                 .description("Controls how to stop transcribing")
                 .control(widget::dropdown(mode_names, selected_index, move |index| {
-                    Message::RecordingStopModeChanged(modes[index])
+                    Message::RecordingStopMode(RecordingStopModeMessage::Changed(modes[index]))
                 })),
         )
         .add(
@@ -38,7 +40,7 @@ fn settings_section(
                 )
                 .control(
                     cosmic::widget::toggler(preview_typing_enabled)
-                        .on_toggle(Message::PreviewTypingToggled),
+                        .on_toggle(|b| Message::PreviewTyping(PreviewTypingMessage::Toggled(b))),
                 ),
         )
         .into()
@@ -63,12 +65,10 @@ fn test_section<'a>(
     };
 
     let record_button = match recording_status {
-        RecordingStatus::Recording => {
-            button::destructive("Stop Recording").on_press(Message::StopRecording)
-        }
-        RecordingStatus::Idle => {
-            button::suggested("Test Recording").on_press(Message::StartRecording)
-        }
+        RecordingStatus::Recording => button::destructive("Stop Recording")
+            .on_press(Message::Recording(RecordingMessage::StopRecording)),
+        RecordingStatus::Idle => button::suggested("Test Recording")
+            .on_press(Message::Recording(RecordingMessage::StartRecording)),
     };
 
     let audio_widget = row![
@@ -113,16 +113,22 @@ pub fn page<'a>(
     transcription_text: &'a str,
     audio_level: f32,
     is_speech_detected: bool,
+    action_error: Option<&'a str>,
 ) -> Element<'a, Message> {
-    let sections = settings::view_column(vec![
-        settings_section(recording_stop_mode, preview_typing_enabled),
-        test_section(
-            recording_status,
-            transcription_text,
-            audio_level,
-            is_speech_detected,
-        ),
-    ]);
+    let mut blocks = Vec::new();
+    if let Some(message) = action_error {
+        blocks.push(error_banner(message));
+    }
+    blocks.push(settings_section(
+        recording_stop_mode,
+        preview_typing_enabled,
+    ));
+    blocks.push(test_section(
+        recording_status,
+        transcription_text,
+        audio_level,
+        is_speech_detected,
+    ));
 
-    page_layout("Recording", sections)
+    page_layout("Recording", settings::view_column(blocks))
 }
