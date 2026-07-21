@@ -4,6 +4,7 @@ mod preview;
 mod transcribe;
 
 use crate::daemon::types::SuperSTTDaemon;
+use crate::output::notice;
 use crate::services::dbus::ListeningEvent;
 use crate::{audio::recorder::DaemonAudioRecorder, output::typer::Typer};
 use anyhow::{Context, Result};
@@ -51,6 +52,21 @@ impl SuperSTTDaemon {
             }
         }
 
+        // Fail before capture. With no model loaded the cycle can only end in a
+        // discarded recording, so starting the mic would cost the user a full
+        // take — beeps, speech, and all — to learn nothing. In write mode the
+        // reason lands in the field they are actually looking at.
+        if self.model.read().await.is_none() {
+            warn!("Recording request rejected - no model loaded");
+            if write_mode {
+                typer.type_notice(notice::NO_MODEL_LOADED).await;
+            }
+            return DaemonResponse::error_with_code(
+                ErrorCode::ModelNotLoaded,
+                "No model is loaded. Load a model and try again.",
+            );
+        }
+
         // Wait for recording to complete and return the transcription.
         match self
             .record_and_transcribe(typer, write_mode, stop_mode, request_language)
@@ -85,6 +101,9 @@ impl SuperSTTDaemon {
                 {
                     let mut guard = self.busy.write().await;
                     *guard = false;
+                }
+                if write_mode {
+                    typer.type_notice(notice::COULD_NOT_START_RECORDING).await;
                 }
                 DaemonResponse::error(&format!("Recording failed: {e}"))
             }
@@ -142,6 +161,9 @@ impl SuperSTTDaemon {
                 warn!("Recording capture failed: {e}");
                 self.finalize_recording_session("", false, Some(e.to_string()))
                     .await;
+                if write_mode {
+                    typer.type_notice(notice::RECORDING_FAILED).await;
+                }
                 return Ok(Err(format!("recording error: {e}")));
             }
         };
@@ -161,6 +183,9 @@ impl SuperSTTDaemon {
                 warn!("Final transcription failed: {e}");
                 self.finalize_recording_session("", false, Some(e.to_string()))
                     .await;
+                if write_mode {
+                    typer.type_notice(notice::TRANSCRIPTION_FAILED).await;
+                }
                 return Ok(Err(format!("STT error: {e}")));
             }
         };

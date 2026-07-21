@@ -5,7 +5,9 @@
 //! live in [`crate::output::preview`].
 
 use crate::output::keyboard::Simulator;
-use crate::output::preview::{find_common_prefix, find_tail_match_in_text, preprocess_text};
+use crate::output::preview::{
+    find_common_prefix, find_tail_match_in_text, preprocess_text, sanitize_for_typing,
+};
 use log::{debug, info, warn};
 
 /// State for tracking preview updates
@@ -148,6 +150,28 @@ impl State {
         best_text.to_string()
     }
 }
+
+/// How long [`Typer::type_notice`] waits before typing, so the user's shortcut
+/// keys can be fully released first.
+///
+/// A failure notice can be emitted within milliseconds of a keypress, at which
+/// point the shortcut's modifier keys (Ctrl/Alt/Super/Shift) are usually still
+/// physically held down. Simulated keystrokes sent during that window arrive
+/// *modified*, so the focused application interprets the notice as shortcuts
+/// rather than text.
+///
+/// Two distinct cases hit this window, which is why the wait applies to every
+/// notice rather than just the first:
+///
+/// - The no-model preflight rejects the request before capture even starts, so
+///   the notice follows the *start* keypress almost immediately.
+/// - In manual stop mode the user presses the hotkey to end the recording, and
+///   a failure that surfaces quickly after that — a model unloaded mid-cycle,
+///   say — puts the notice right behind the *stop* keypress.
+///
+/// This does not apply to transcription output: that is typed after speech has
+/// been captured and transcribed, long past any plausible key-release window.
+const NOTICE_KEY_RELEASE_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Unified, simplified preview typer that combines the best of both approaches
 pub struct Typer {
@@ -303,6 +327,39 @@ impl Typer {
 
         // Clear session for next recording
         self.state.full_session_text.clear();
+    }
+
+    /// Type a fixed daemon-authored notice into the focused window.
+    ///
+    /// Deliberately **not** `process_final_text`. That method mutates
+    /// transcript state (`last_transcription`, `prev_text`, `full_session_text`)
+    /// which feeds preview tail-matching on the next recording, and applies
+    /// transcript semantics — capitalization, a trailing period, a trailing
+    /// space — that a fixed marker must not inherit. A notice is typed verbatim
+    /// and leaves session state alone.
+    ///
+    /// Routed through the same [`sanitize_for_typing`] choke point as every
+    /// other write path (audit 2 Tier 3 #8). The callers pass constants, so
+    /// this is a no-op today; it is here so the property holds by
+    /// construction.
+    ///
+    /// Waits [`NOTICE_KEY_RELEASE_DELAY`] before typing — see that constant for
+    /// why.
+    pub async fn type_notice(&mut self, notice: &str) {
+        // Let the user's hotkey come back up first. The no-model preflight
+        // rejects before capture starts, so this can run within milliseconds of
+        // the press, while the shortcut's modifiers are still physically held.
+        // Typing then delivers *modified* keystrokes to the focused window —
+        // the notice would fire shortcuts in the user's application instead of
+        // inserting text.
+        tokio::time::sleep(NOTICE_KEY_RELEASE_DELAY).await;
+
+        let sanitized = sanitize_for_typing(notice);
+        if let Err(e) = self.keyboard_simulator.type_text(&sanitized).await {
+            warn!("Failed to type notice: {e}");
+        } else {
+            info!("Typed failure notice: {sanitized}");
+        }
     }
 
     /// Apply text update to screen (common logic)
