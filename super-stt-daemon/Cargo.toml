@@ -7,13 +7,23 @@
     repository = "https://github.com/jorge-menjivar/super-stt"
     license = "GPL-3.0-only"
 
-[lints]
-workspace = true
+[[bin]]
+    name = "mock_backend"
+    path = "src/bin/mock_backend.rs"
+    required-features = ["test-fixtures"]
 
 [dependencies]
     # Core dependencies
     anyhow.workspace = true
-chrono.workspace = true
+    async-trait = "0.1.89"
+    axum = {
+        version = "0.8",
+        default-features = false,
+        features = ["json", "query", "tokio", "ws"]
+    }
+    base64 = "0.22.1"
+    bytes = { version = "1.11.1", optional = true }
+    chrono.workspace = true
     # CLI for daemon
     clap.workspace = true
     cpal.workspace = true
@@ -21,7 +31,20 @@ chrono.workspace = true
     dirs.workspace = true
     # Input simulation
     enigo.workspace = true
+    flate2 = "1.1.9"
     futures = "0.3"
+    gpu-probe = {
+        git = "https://github.com/jorge-menjivar/gpu-probe",
+        rev = "2912a8d8ca2d77aae511e60f824fcad1ab409892"
+    }
+    hex = "0.4.3"
+    http-body = { version = "1.0.1", optional = true }
+    http-body-util = "0.1"
+    hyper = { version = "1", features = ["http1", "server"] }
+    hyper-util = {
+        version = "0.1",
+        features = ["http1", "server", "server-auto", "tokio"]
+    }
     keyring.workspace = true
     libc.workspace = true
     log.workspace = true
@@ -30,53 +53,70 @@ chrono.workspace = true
     # Hashing for content-addressed blobs
     ring = "0.17"
     rubato.workspace = true
-    rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+    rustls = {
+        version = "0.23",
+        default-features = false,
+        features = ["ring", "std", "tls12"]
+    }
+    semver = "1.0.28"
     serde.workspace = true
     serde_json.workspace = true
     strum.workspace = true
     strum_macros.workspace = true
+    super-stt-forge = { path = "../super-stt-forge" }
+    super-stt-registry-types = { path = "../super-stt-registry-types" }
     # Shared crate
-    super-stt-shared = { path = "../super-stt-shared", features = [
-        "analysis",
-        "audio",
-    ] }
-    tokio = { workspace = true, features = [
-        "fs",
-        "io-std",
-        "io-util",
-        "macros",
-        "process",
-        "rt-multi-thread",
-        "signal",
-    ] }
+    super-stt-shared = {
+        path = "../super-stt-shared",
+        features = [
+            "analysis",
+            "audio",
+        ]
+    }
+    tar = "0.4.46"
+    thiserror.workspace = true
+    tokio = {
+        workspace = true,
+        features = [
+            "fs",
+            "io-std",
+            "io-util",
+            "macros",
+            "process",
+            "rt-multi-thread",
+            "signal",
+        ]
+    }
+    tokio-stream = { version = "0.1.18", features = ["sync"] }
+    tokio-tungstenite = {
+        version = "0.29.0",
+        default-features = false,
+        features = ["connect", "rustls-tls-webpki-roots"]
+    }
     tokio-util.workspace = true
     toml.workspace = true
+    ulid = "1.2.1"
+    urlencoding = "2.1.3"
     uuid.workspace = true
+    wasmtime = { version = "45.0.0", features = ["async"], optional = true }
+    wasmtime-wasi = { version = "45.0.0", optional = true }
+    wasmtime-wasi-http = { version = "45.0.0", optional = true }
     # D-Bus integration
     zbus.workspace = true
-async-trait = "0.1.89"
-tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
-base64 = "0.22.1"
-axum = { version = "0.8", default-features = false, features = ["json", "query", "tokio", "ws"] }
-http-body-util = "0.1"
-hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio", "http1"] }
-tokio-stream = { version = "0.1.18", features = ["sync"] }
-wasmtime = { version = "45.0.0", features = ["async"], optional = true }
-wasmtime-wasi = { version = "45.0.0", optional = true }
-wasmtime-wasi-http = { version = "45.0.0", optional = true }
-bytes = { version = "1.11.1", optional = true }
-http-body = { version = "1.0.1", optional = true }
-gpu-probe = { git = "https://github.com/jorge-menjivar/gpu-probe", rev = "2912a8d8ca2d77aae511e60f824fcad1ab409892" }
-semver = "1.0.28"
-thiserror.workspace = true
-tar = "0.4.46"
-flate2 = "1.1.9"
-hex = "0.4.3"
-ulid = "1.2.1"
-urlencoding = "2.1.3"
-super-stt-registry-types = { path = "../super-stt-registry-types" }
-super-stt-forge = { version = "0.1.4-beta.2", path = "../super-stt-forge" }
+
+[dev-dependencies]
+    futures-util.workspace = true
+    hound.workspace = true
+    http-body-util = "0.1"
+    hyper = { version = "1", features = ["client", "http1"] }
+    hyper-util = { version = "0.1", features = ["tokio"] }
+    libc.workspace = true
+    mockito = "1.7.2"
+    tempfile = "3.27.0"
+    # `test-util` enables `#[tokio::test(start_paused = true)]`, so tests covering
+    # the notice key-release delay assert it without spending it in wall-clock time.
+    tokio = { workspace = true, features = ["test-util"] }
+    wiremock = "0.6.5"
 
 [features]
     # Models are served by out-of-tree backends; both transports are on by
@@ -84,33 +124,17 @@ super-stt-forge = { version = "0.1.4-beta.2", path = "../super-stt-forge" }
     # has cuda/cudnn/flash-attn features.
     default = ["subprocess-backends", "wasm-backends"]
     # Spawn STT backends as sandboxed native subprocesses.
-    subprocess-backends = ["hyper/client", "dep:bytes"]
+    subprocess-backends = ["dep:bytes", "hyper/client"]
+    # Build the mock_backend test fixture binary (used by tests/subprocess_mock.rs).
+    test-fixtures = ["hyper-util/service"]
     # Load STT backends as sandboxed WASM components.
     wasm-backends = [
+        "dep:bytes",
+        "dep:http-body",
         "dep:wasmtime",
         "dep:wasmtime-wasi",
         "dep:wasmtime-wasi-http",
-        "dep:bytes",
-        "dep:http-body",
     ]
-    # Build the mock_backend test fixture binary (used by tests/subprocess_mock.rs).
-    test-fixtures = ["hyper-util/service"]
 
-[dev-dependencies]
-futures-util.workspace = true
-hound.workspace = true
-http-body-util = "0.1"
-hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-libc.workspace = true
-mockito = "1.7.2"
-tempfile = "3.27.0"
-# `test-util` enables `#[tokio::test(start_paused = true)]`, so tests covering
-# the notice key-release delay assert it without spending it in wall-clock time.
-tokio = { workspace = true, features = ["test-util"] }
-wiremock = "0.6.5"
-
-[[bin]]
-    name = "mock_backend"
-    path = "src/bin/mock_backend.rs"
-    required-features = ["test-fixtures"]
+[lints]
+    workspace = true

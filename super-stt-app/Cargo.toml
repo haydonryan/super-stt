@@ -7,9 +7,6 @@
     repository = "https://github.com/jorge-menjivar/super-stt"
     license = "GPL-3.0-only"
 
-[lints]
-workspace = true
-
 [dependencies]
     anyhow.workspace = true
     dirs.workspace = true
@@ -21,7 +18,7 @@ workspace = true
     libcosmic.workspace = true
     log.workspace = true
     open.workspace = true
-rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+    rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
     rust-embed.workspace = true
     serde.workspace = true
     serde_json.workspace = true
@@ -30,13 +27,15 @@ rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] 
     slotmap = "1.1"
     strum.workspace = true
     strum_macros.workspace = true
-super-stt-registry-types = { version = "0.1.4-beta.2", path = "../super-stt-registry-types" }
+    super-stt-registry-types = {
+        path = "../super-stt-registry-types",
+    }
     # Workspace dependencies
     super-stt-shared = { path = "../super-stt-shared" }
     tokio.workspace = true
     # Configuration
     toml.workspace = true
-urlencoding = "2.1.3"
+    urlencoding = "2.1.3"
     uuid.workspace = true
 
 [build-dependencies]
@@ -44,3 +43,6 @@ urlencoding = "2.1.3"
 
 [features]
     default = []
+
+[lints]
+    workspace = true
