@@ -12,16 +12,17 @@
     name = "super-stt-cosmic-applet"
     path = "src/main.rs"
 
-[lints]
-workspace = true
-
 [dependencies]
-base64 = "0.22.1"
+    base64 = "0.22.1"
     clap = { version = "4.5", features = ["derive"] }
-    cosmic = { package = "libcosmic", git = "https://github.com/pop-os/libcosmic.git", features = [
-        "applet",
-        "tokio",
-    ] }
+    cosmic = {
+        package = "libcosmic",
+        git = "https://github.com/pop-os/libcosmic.git",
+        features = [
+            "applet",
+            "tokio",
+        ]
+    }
     futures-util.workspace = true
     libc.workspace = true
     log.workspace = true
@@ -30,3 +31,6 @@ base64 = "0.22.1"
     super-stt-shared = { path = "../super-stt-shared" }
     tokio.workspace = true
     toml.workspace = true
+
+[lints]
+    workspace = true

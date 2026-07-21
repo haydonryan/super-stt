@@ -27,9 +27,7 @@
     slotmap = "1.1"
     strum.workspace = true
     strum_macros.workspace = true
-    super-stt-registry-types = {
-        path = "../super-stt-registry-types",
-    }
+    super-stt-registry-types = { path = "../super-stt-registry-types" }
     # Workspace dependencies
     super-stt-shared = { path = "../super-stt-shared" }
     tokio.workspace = true

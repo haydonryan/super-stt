@@ -11,11 +11,14 @@
     name = "super-stt-cli"
     path = "src/main.rs"
 
-[lints]
-workspace = true
-
 [dependencies]
-anyhow.workspace = true
-clap.workspace = true
-super-stt-shared = { path = "../super-stt-shared" }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }
+    anyhow.workspace = true
+    clap.workspace = true
+    super-stt-shared = { path = "../super-stt-shared" }
+    tokio = {
+        workspace = true,
+        features = ["io-util", "macros", "net", "rt-multi-thread"]
+    }
+
+[lints]
+    workspace = true

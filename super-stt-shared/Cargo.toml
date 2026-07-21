@@ -5,40 +5,44 @@
     edition.workspace = true
     description = "Shared types and utilities for Super STT"
 
-[lints]
-workspace = true
-
 [dependencies]
-    # Core shared dependencies
     anyhow.workspace = true
-async-stream = "0.3.6"
-dirs.workspace = true
-env_logger.workspace = true
-futures-util.workspace = true
-http-body-util = "0.1"
-hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
-keyring.workspace = true
+    async-stream = "0.3.6"
+    dirs.workspace = true
+    env_logger.workspace = true
+    futures-util.workspace = true
+    http-body-util = "0.1"
+    hyper = { version = "1", features = ["client", "http1"] }
+    hyper-util = {
+        version = "0.1",
+        features = ["client", "client-legacy", "http1", "tokio"]
+    }
+    keyring.workspace = true
     libc.workspace = true
-log.workspace = true
+    log.workspace = true
     rubato = { workspace = true, optional = true }
     serde.workspace = true
     serde_json.workspace = true
-    # Audio analysis (optional feature)
     spectrum-analyzer = { workspace = true, optional = true }
     strum.workspace = true
     strum_macros.workspace = true
-super-stt-registry-types = { path = "../super-stt-registry-types" }
+    super-stt-registry-types = { path = "../super-stt-registry-types" }
     thiserror.workspace = true
-    tokio = { workspace = true, features = [
-        "macros",
-        "net",
-        "rt-multi-thread",
-        "time",
-    ] }
+    tokio = {
+        workspace = true,
+        features = [
+            "macros",
+            "net",
+            "rt-multi-thread",
+            "time",
+        ]
+    }
     uuid.workspace = true
 
 [features]
     default = []
     analysis = ["spectrum-analyzer"]
     audio = ["rubato"]
+
+[lints]
+    workspace = true

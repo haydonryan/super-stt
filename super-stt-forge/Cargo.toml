@@ -17,9 +17,7 @@
         features = ["ring", "std", "tls12"]
     }
     serde.workspace = true
-    super-stt-registry-types = {
-        path = "../super-stt-registry-types",
-    }
+    super-stt-registry-types = { path = "../super-stt-registry-types" }
     thiserror.workspace = true
 
 [dev-dependencies]

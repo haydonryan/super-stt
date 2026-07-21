@@ -1,18 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-only
 [package]
     name = "super-stt-indexer"
-    version = "0.1.0"
     edition = "2024"
     description = "Cron-driven indexer that builds index.json from registry.toml"
     license = "GPL-3.0-only"
 
 [dependencies]
-    # Shared version pins inherited from [workspace.dependencies].
     anyhow.workspace = true
     chrono.workspace = true
     clap.workspace = true
     env_logger.workspace = true
-    # Indexer-only dependencies (not used elsewhere in the workspace).
     flate2 = "1"
     futures = "0.3"
     hex = "0.4"
@@ -23,7 +20,6 @@
     serde.workspace = true
     serde_json.workspace = true
     super-stt-forge = { path = "../super-stt-forge" }
-    # Workspace path crates.
     super-stt-registry-types = { path = "../super-stt-registry-types" }
     tar = "0.4"
     thiserror.workspace = true
