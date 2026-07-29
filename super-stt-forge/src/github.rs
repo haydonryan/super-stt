@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::{ForgeClient, ForgeError, Release, ReleaseAsset, RepoRef};
+use crate::{ForgeClient, ForgeError, Release, ReleaseAsset, ReleaseKind, RepoRef};
 
 const DEFAULT_BASE: &str = "https://api.github.com";
 
@@ -39,10 +39,16 @@ struct GhAsset {
 
 impl From<GhRelease> for Release {
     fn from(r: GhRelease) -> Self {
+        let kind = if r.draft {
+            ReleaseKind::Draft
+        } else if r.prerelease {
+            ReleaseKind::Prerelease
+        } else {
+            ReleaseKind::Published
+        };
         Release {
             tag: r.tag_name,
-            draft: r.draft,
-            prerelease: r.prerelease,
+            kind,
             assets: r.assets.into_iter().map(Into::into).collect(),
         }
     }
@@ -154,7 +160,7 @@ impl ForgeClient for Github {
 #[cfg(test)]
 mod tests {
     use super::Github;
-    use crate::{ForgeClient, RepoRef};
+    use crate::{ForgeClient, ReleaseKind, RepoRef};
 
     #[tokio::test]
     async fn latest_release_maps_github_json_to_neutral_release() {
@@ -171,8 +177,11 @@ mod tests {
         let repo = RepoRef::parse("github.com/x/y").unwrap();
         let r = gh.latest_release(&repo).await.unwrap();
         assert_eq!(r.tag, "v1.2.3");
-        assert!(!r.draft, "draft defaults to false when omitted");
-        assert!(!r.prerelease, "prerelease defaults to false when omitted");
+        assert_eq!(
+            r.kind,
+            ReleaseKind::Published,
+            "default release is published"
+        );
         assert_eq!(r.assets.len(), 1);
         assert_eq!(r.assets[0].name, "a.tar.gz");
         assert_eq!(r.assets[0].download_url, "https://dl/a");

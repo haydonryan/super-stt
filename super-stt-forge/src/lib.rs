@@ -61,12 +61,23 @@ impl RepoRef {
     }
 }
 
+/// Whether a forge release is a published release, an unpublished draft, or a
+/// pre-release. These three states are mutually exclusive on every forge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseKind {
+    /// A stable, published release.
+    Published,
+    /// An unpublished draft.
+    Draft,
+    /// A pre-release (e.g. GitHub's `prerelease` flag).
+    Prerelease,
+}
+
 /// A forge-neutral release. Adapters map their host's JSON onto this.
 #[derive(Debug, Clone)]
 pub struct Release {
     pub tag: String,
-    pub draft: bool,
-    pub prerelease: bool,
+    pub kind: ReleaseKind,
     pub assets: Vec<ReleaseAsset>,
 }
 
