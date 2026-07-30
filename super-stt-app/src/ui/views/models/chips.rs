@@ -355,7 +355,7 @@ mod capability_tests {
                 .enumerate()
                 .map(|(i, devices)| BackendModel {
                     name: format!("m{i}"),
-                    provider: "local_test".to_string(),
+                    provider: String::new(),
                     supported_devices: devices.iter().map(|s| (*s).to_string()).collect(),
                     estimated_vram_bytes: 0,
                     multilingual: false,

@@ -16,12 +16,11 @@ use std::time::Duration;
 use log::{error, info, warn};
 
 use crate::stt_models::ModelDefinition;
-use super_stt_shared::models::provider::Provider;
 
 use manifest::{Device, Manifest, ModelEntry, Opt, Secret};
 
 /// A backend discovered on disk, with the models it serves resolved into
-/// [`ModelDefinition`]s keyed by `(name, provider, source)`.
+/// [`ModelDefinition`]s keyed by `(name, source)`.
 #[derive(Clone, Debug)]
 pub struct DiscoveredBackend {
     /// Directory holding `backend.toml` and the entrypoint.
@@ -112,8 +111,8 @@ fn dedup_sources(backends: Vec<DiscoveredBackend>) -> Vec<DiscoveredBackend> {
 ///
 /// Per-model errors (missing/invalid `supported_devices`) are fatal for the
 /// *whole* backend: discovery skips it rather than expose a half-defined
-/// model. Unknown providers and devices are rejected at parse time by the
-/// typed manifest; this function enforces the cross-field device rules via
+/// model. Unknown device names are rejected at parse time by the typed
+/// manifest; this function enforces the cross-field device rules via
 /// [`validate_supported_devices`].
 fn load_backend(dir: &Path) -> anyhow::Result<DiscoveredBackend> {
     let m = Manifest::load(dir)?;
@@ -129,7 +128,6 @@ fn load_backend(dir: &Path) -> anyhow::Result<DiscoveredBackend> {
             .map_or_else(|| Duration::from_secs(2), Duration::from_millis);
         models.push(ModelDefinition {
             name: entry.name.clone(),
-            provider: entry.provider.clone(),
             source: source.clone(),
             is_multilingual: entry.multilingual,
             primary_language: entry.primary_language.clone(),
@@ -138,6 +136,7 @@ fn load_backend(dir: &Path) -> anyhow::Result<DiscoveredBackend> {
             processing_interval: interval,
             supported_devices,
             realtime: entry.realtime,
+            provider: entry.provider.clone(),
         });
     }
 
@@ -182,29 +181,26 @@ fn validate_supported_devices(entry: &ModelEntry) -> anyhow::Result<Vec<Device>>
     Ok(seen)
 }
 
-/// Locate the backend and model definition matching `(name, provider, source)`.
+/// Locate the backend and model definition matching `(name, source)`.
 ///
-/// An empty `source` matches the first backend that serves `(name, provider)`.
+/// `source` must be concrete. It deliberately has no "any backend" form: two
+/// backends may serve the same model `name` (see
+/// `docs/protocol/backend/contract.md`), so a name-only lookup would resolve
+/// by scan order — which comes from `read_dir` and can differ between runs —
+/// and `handle_set_model_impl` then *persists* the backend it picked. Callers
+/// that accept an omitted `source` on the wire resolve it against the active
+/// backend first (`SuperSTTDaemon::active_backend_source`); an empty `source`
+/// here matches nothing.
 #[must_use]
 pub fn find_model<'a>(
     backends: &'a [DiscoveredBackend],
     name: &str,
-    provider: &Provider,
     source: &str,
 ) -> Option<(&'a DiscoveredBackend, &'a ModelDefinition)> {
-    for backend in backends {
-        if !source.is_empty() && backend.source != source {
-            continue;
-        }
-        if let Some(def) = backend
-            .models
-            .iter()
-            .find(|d| d.name == name && d.provider == *provider)
-        {
-            return Some((backend, def));
-        }
-    }
-    None
+    backends
+        .iter()
+        .find(|b| b.source == source)
+        .and_then(|b| b.models.iter().find(|d| d.name == name).map(|d| (b, d)))
 }
 
 /// Relative install dir (subdir name) of a backend — the stable handle used to
@@ -217,16 +213,12 @@ pub fn dir_name(backend: &DiscoveredBackend) -> Option<String> {
         .map(|n| n.to_string_lossy().into_owned())
 }
 
-/// Flatten all discovered models into `(name, provider, source)` triples.
+/// Flatten all discovered models into `(name, source)` pairs.
 #[must_use]
-pub fn list_models(backends: &[DiscoveredBackend]) -> Vec<(String, Provider, String)> {
+pub fn list_models(backends: &[DiscoveredBackend]) -> Vec<(String, String)> {
     backends
         .iter()
-        .flat_map(|b| {
-            b.models
-                .iter()
-                .map(|d| (d.name.clone(), d.provider.clone(), d.source.clone()))
-        })
+        .flat_map(|b| b.models.iter().map(|d| (d.name.clone(), d.source.clone())))
         .collect()
 }
 

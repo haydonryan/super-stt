@@ -379,6 +379,10 @@ async fn set_model_online_rejected_when_disabled() {
         "whisper-1",
     )];
 
+    // No `source` on the request: it resolves to the selected backend, so
+    // select the one just registered.
+    *daemon.active_backend.write().await = Some("openai".to_string());
+
     let request = DaemonRequest {
         command: "set_model".to_string(),
         audio_data: None,
@@ -389,49 +393,120 @@ async fn set_model_online_rejected_when_disabled() {
         since_timestamp: None,
         limit: None,
         event_type: None,
-        data: Some(serde_json::json!({ "model": "whisper-1", "provider": "openai" })),
+        data: Some(serde_json::json!({ "model": "whisper-1"})),
         language: None,
         enabled: None,
     };
 
     let response = daemon.handle_command(request).await;
     assert_eq!(response.status, "error");
+    assert_eq!(
+        response.error_code,
+        Some(ErrorCode::OnlineModelsDisabled),
+        "expected the online gate to reject whisper-1, got: {:?} / {:?}",
+        response.error_code,
+        response.message
+    );
+}
+
+/// An omitted `source` resolves to the active backend — not to whichever
+/// installed backend happens to serve the name. Two backends serve
+/// `whisper-tiny` here; the selected one must win regardless of their order in
+/// the registry, since the backend that wins is persisted as the active one.
+#[tokio::test]
+async fn an_omitted_source_resolves_to_the_active_backend() {
+    let daemon = test_daemon().await;
+    // `whisper` sorts before `zeta`, and is listed second — a scan-order
+    // resolution would return `zeta` here.
+    *daemon.backends.write().await = vec![
+        fixture_backend_local("zeta", "github.com/other/zeta", "Zeta", "whisper-tiny"),
+        fixture_backend_local(
+            "whisper",
+            "github.com/super-stt/whisper",
+            "Whisper",
+            "whisper-tiny",
+        ),
+    ];
+    *daemon.active_backend.write().await = Some("whisper".to_string());
+
+    assert_eq!(
+        daemon.active_backend_source().await.as_deref(),
+        Some("github.com/super-stt/whisper"),
+        "an omitted source must resolve to the selected backend, not the first scanned"
+    );
+}
+
+/// With nothing selected there is no defensible guess, so the switch fails
+/// instead of binding to an arbitrary backend and persisting that choice.
+#[tokio::test]
+async fn an_omitted_source_with_no_active_backend_is_an_error() {
+    let daemon = test_daemon().await;
+    *daemon.backends.write().await = vec![fixture_backend_local(
+        "whisper",
+        "github.com/super-stt/whisper",
+        "Whisper",
+        "whisper-tiny",
+    )];
+    assert!(daemon.active_backend.read().await.is_none());
+
+    let mut request = make_request("set_model");
+    request.data = Some(serde_json::json!({ "model": "whisper-tiny" }));
+
+    let response = daemon.handle_command(request).await;
+    assert_eq!(response.status, "error");
+    assert_eq!(
+        response.error_code,
+        Some(ErrorCode::InvalidBackend),
+        "expected the switch to refuse to guess a backend, got: {:?} / {:?}",
+        response.error_code,
+        response.message
+    );
     assert!(
-        response
-            .message
-            .as_deref()
-            .unwrap_or("")
-            .contains("disabled")
-            || response
-                .message
-                .as_deref()
-                .unwrap_or("")
-                .contains("Online models are disabled"),
-        "expected error about online models being disabled, got: {:?}",
+        daemon.active_backend.read().await.is_none(),
+        "a refused switch must not select a backend"
+    );
+}
+
+/// The online gate is what these cover, so the model has to *resolve* first —
+/// online-ness is a property of the resolved model (`supported_devices` =
+/// `["none"]`), and the gate is checked after resolution. Without a registered
+/// backend the response is `invalid_model` and a bare `status == "error"`
+/// assertion passes with the gate deleted entirely.
+async fn assert_online_model_rejected(source: &str, dir: &str, model: &str) {
+    let daemon = test_daemon().await;
+    assert!(
+        !daemon.config.read().await.online.allow_online_models,
+        "online models must be disabled for this test to mean anything"
+    );
+    *daemon.backends.write().await = vec![fixture_backend(dir, source, dir, model)];
+
+    let mut request = make_request("set_model");
+    request.data = Some(serde_json::json!({ "model": model, "source": source }));
+
+    let response = daemon.handle_command(request).await;
+    assert_eq!(response.status, "error");
+    assert_eq!(
+        response.error_code,
+        Some(ErrorCode::OnlineModelsDisabled),
+        "expected the online gate to reject {model}, got: {:?} / {:?}",
+        response.error_code,
         response.message
     );
 }
 
 #[tokio::test]
 async fn set_model_mistral_rejected_when_disabled() {
-    let daemon = test_daemon().await;
-
-    let mut request = make_request("set_model");
-    request.data = Some(serde_json::json!({ "model": "voxtral-mini-transcribe-v2" }));
-
-    let response = daemon.handle_command(request).await;
-    assert_eq!(response.status, "error");
+    assert_online_model_rejected(
+        "github.com/super-stt/mistral",
+        "mistral",
+        "voxtral-mini-transcribe-v2",
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn set_model_deepgram_rejected_when_disabled() {
-    let daemon = test_daemon().await;
-
-    let mut request = make_request("set_model");
-    request.data = Some(serde_json::json!({ "model": "nova-3" }));
-
-    let response = daemon.handle_command(request).await;
-    assert_eq!(response.status, "error");
+    assert_online_model_rejected("github.com/super-stt/deepgram", "deepgram", "nova-3").await;
 }
 
 #[tokio::test]
@@ -484,25 +559,40 @@ async fn list_models_reflects_discovered_backends() {
     );
 }
 
+/// The online gate must not fire for a local model. This only means anything
+/// once the model resolves — with no backend registered the switch stops at
+/// `invalid_model` and the gate is never reached, so the assertion would hold
+/// with the gate deleted.
 #[tokio::test]
 async fn set_model_local_works_without_online_toggle() {
     let daemon = test_daemon().await;
+    let source = "github.com/super-stt/whisper";
+    *daemon.backends.write().await = vec![fixture_backend_local(
+        "whisper",
+        source,
+        "Whisper",
+        "whisper-tiny",
+    )];
+    assert!(!daemon.config.read().await.online.allow_online_models);
 
-    // Local models should not be blocked by the online toggle
-    // (they will fail because no model files exist, but the error
-    // should NOT be about online models being disabled)
     let mut request = make_request("set_model");
-    request.data = Some(serde_json::json!({ "model": "whisper-tiny" }));
+    request.data = Some(serde_json::json!({ "model": "whisper-tiny", "source": source }));
 
     let response = daemon.handle_command(request).await;
-    // Should either succeed (already loaded) or fail for non-online reasons
-    if response.status == "error" {
-        let msg = response.message.as_deref().unwrap_or("");
-        assert!(
-            !msg.contains("Online models are disabled"),
-            "local model should not be blocked by online toggle"
-        );
-    }
+    // The load itself fails (the fixture has no files on disk), but it must get
+    // *past* the gate: a local model is never blocked by the online toggle.
+    assert_ne!(
+        response.error_code,
+        Some(ErrorCode::OnlineModelsDisabled),
+        "a local model was blocked by the online toggle: {:?}",
+        response.message
+    );
+    assert_ne!(
+        response.error_code,
+        Some(ErrorCode::InvalidModel),
+        "the model did not resolve, so the gate was never exercised: {:?}",
+        response.message
+    );
 }
 
 /// `handle_list_backends` builds the catalog JSON (models, secrets,
@@ -514,7 +604,6 @@ async fn list_backends_catalog_and_option_override() {
     use crate::stt_models::backends::DiscoveredBackend;
     use crate::stt_models::backends::manifest::{Opt, OptionDefault, OptionType, Secret};
     use std::time::Duration;
-    use super_stt_shared::models::provider::Provider;
 
     let daemon = test_daemon().await;
     let source = "github.com/super-stt/openai";
@@ -541,7 +630,6 @@ async fn list_backends_catalog_and_option_override() {
         }],
         models: vec![ModelDefinition {
             name: "whisper-1".to_string(),
-            provider: Provider::from("openai"),
             source: source.to_string(),
             is_multilingual: true,
             primary_language: "en".to_string(),
@@ -550,6 +638,7 @@ async fn list_backends_catalog_and_option_override() {
             processing_interval: Duration::from_secs(1),
             supported_devices: vec![super_stt_registry_types::manifest::Device::None],
             realtime: false,
+            provider: None,
         }],
     };
     *daemon.backends.write().await = vec![backend];
@@ -587,17 +676,50 @@ async fn list_backends_catalog_and_option_override() {
 }
 
 /// Build a `DiscoveredBackend` whose `dir` ends in `dir_name` and that
-/// serves a single model — enough surface for the active-backend handlers.
+/// serves a single **online** model (the `none` device sentinel) — enough
+/// surface for the active-backend handlers and the online gate.
 fn fixture_backend(
     dir_name: &str,
     source: &str,
     name: &str,
     model_name: &str,
 ) -> crate::stt_models::backends::DiscoveredBackend {
+    fixture_backend_devices(
+        dir_name,
+        source,
+        name,
+        model_name,
+        vec![super_stt_registry_types::manifest::Device::None],
+    )
+}
+
+/// [`fixture_backend`], but serving a **local** model — one the online gate
+/// must let through.
+fn fixture_backend_local(
+    dir_name: &str,
+    source: &str,
+    name: &str,
+    model_name: &str,
+) -> crate::stt_models::backends::DiscoveredBackend {
+    fixture_backend_devices(
+        dir_name,
+        source,
+        name,
+        model_name,
+        vec![super_stt_registry_types::manifest::Device::Cpu],
+    )
+}
+
+fn fixture_backend_devices(
+    dir_name: &str,
+    source: &str,
+    name: &str,
+    model_name: &str,
+    supported_devices: Vec<super_stt_registry_types::manifest::Device>,
+) -> crate::stt_models::backends::DiscoveredBackend {
     use crate::stt_models::ModelDefinition;
     use crate::stt_models::backends::DiscoveredBackend;
     use std::time::Duration;
-    use super_stt_shared::models::provider::Provider;
 
     DiscoveredBackend {
         dir: std::path::PathBuf::from("/tmp").join(dir_name),
@@ -610,15 +732,15 @@ fn fixture_backend(
         options: Vec::new(),
         models: vec![ModelDefinition {
             name: model_name.to_string(),
-            provider: Provider::from("openai"),
             source: source.to_string(),
             is_multilingual: true,
             primary_language: "en".to_string(),
             supported_languages: vec!["en".to_string()],
             estimated_vram_bytes: 0,
             processing_interval: Duration::from_secs(1),
-            supported_devices: vec![super_stt_registry_types::manifest::Device::None],
+            supported_devices,
             realtime: false,
+            provider: None,
         }],
     }
 }
@@ -804,7 +926,7 @@ async fn list_models_is_scoped_to_active_backend() {
     let models = response.available_models.expect("available_models");
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].0, "whisper-1");
-    assert_eq!(models[0].2, openai);
+    assert_eq!(models[0].1, openai);
 
     // Switch to Mistral → only its model.
     let _ = daemon.handle_set_active_backend(mistral.to_string()).await;
@@ -812,7 +934,7 @@ async fn list_models_is_scoped_to_active_backend() {
     let models = response.available_models.expect("available_models");
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].0, "voxtral-mini-latest");
-    assert_eq!(models[0].2, mistral);
+    assert_eq!(models[0].1, mistral);
 }
 
 /// Trivial in-process `Transcribe` impl used to seed the `model` lock so
@@ -851,12 +973,9 @@ async fn seed_loaded_model(daemon: &SuperSTTDaemon, name: &str, source: &str) {
     use crate::stt_models::ModelDefinition;
     use crate::stt_models::transcribe::ModelInfoData;
     use std::time::Duration;
-    use super_stt_shared::models::provider::Provider;
 
-    let provider = Provider::from("openai");
     let definition = ModelDefinition {
         name: name.to_string(),
-        provider: provider.clone(),
         source: source.to_string(),
         is_multilingual: true,
         primary_language: "en".to_string(),
@@ -865,8 +984,9 @@ async fn seed_loaded_model(daemon: &SuperSTTDaemon, name: &str, source: &str) {
         processing_interval: Duration::from_secs(1),
         supported_devices: vec![super_stt_registry_types::manifest::Device::None],
         realtime: false,
+        provider: None,
     };
-    let info = ModelInfoData::new(name, provider, source, true, true, Duration::from_secs(1));
+    let info = ModelInfoData::new(name, source, true, true, Duration::from_secs(1));
     *daemon.model.write().await = Some(LoadedModel {
         definition,
         instance: Box::new(MockTranscribe { info }),
@@ -1120,7 +1240,7 @@ async fn active_backend_commands_dispatch_through_handle_command() {
 /// A successful model load — whether a user-initiated switch or the daemon's
 /// startup load of the persisted model — must broadcast a self-contained
 /// `model_switched` event carrying the model's full identity (`model_name`,
-/// `provider`, `source`) followed by the operational `ready` event. A settings
+/// `source`) followed by the operational `ready` event. A settings
 /// app reconnecting after a daemon restart has no prior `current_source` to
 /// fall back to, so `source` must be on the wire for it to mark the model
 /// loaded — otherwise the model loads (visible in logs / htop) but the UI keeps
@@ -1128,23 +1248,15 @@ async fn active_backend_commands_dispatch_through_handle_command() {
 #[tokio::test]
 async fn broadcast_model_active_carries_full_identity() {
     use crate::daemon::events::Topic;
-    use super_stt_shared::models::provider::Provider;
 
     let daemon = test_daemon().await;
     let mut rx = daemon.events.subscribe(Topic::DaemonStatusChanged);
 
-    let provider = Provider::from("mistral");
-    daemon.broadcast_model_active(
-        "voxtral-mini",
-        &provider,
-        "github.com/super-stt/mistral",
-        "cuda",
-    );
+    daemon.broadcast_model_active("voxtral-mini", "github.com/super-stt/mistral", "cuda");
 
     let (_topic, switched) = rx.recv_json().await.expect("model_switched event");
     assert_eq!(switched["status"], "model_switched");
     assert_eq!(switched["model_name"], "voxtral-mini");
-    assert_eq!(switched["provider"], provider.to_string());
     assert_eq!(switched["source"], "github.com/super-stt/mistral");
 
     let (_topic, ready) = rx.recv_json().await.expect("ready event");
@@ -1193,12 +1305,9 @@ async fn seed_scripted_model(daemon: &SuperSTTDaemon, online: bool, result: Resu
     use crate::stt_models::ModelDefinition;
     use crate::stt_models::transcribe::ModelInfoData;
     use std::time::Duration;
-    use super_stt_shared::models::provider::Provider;
 
-    let provider = Provider::from("local_whisper");
     let definition = ModelDefinition {
         name: "scripted".to_string(),
-        provider: provider.clone(),
         source: "github.com/super-stt/test".to_string(),
         is_multilingual: true,
         primary_language: "en".to_string(),
@@ -1207,10 +1316,10 @@ async fn seed_scripted_model(daemon: &SuperSTTDaemon, online: bool, result: Resu
         processing_interval: Duration::from_secs(1),
         supported_devices: vec![super_stt_registry_types::manifest::Device::Cpu],
         realtime: false,
+        provider: None,
     };
     let info = ModelInfoData::new(
         "scripted",
-        provider,
         "github.com/super-stt/test",
         true,
         online,

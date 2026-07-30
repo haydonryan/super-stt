@@ -14,23 +14,30 @@ fn toml_to_json(text: &str) -> Value {
     toml::from_str(text).expect("valid TOML")
 }
 
+/// Every backend manifest shipped in-repo must match the published schema.
+/// This is what catches the schema drifting away from manifests people
+/// actually write, so it has to *have* inputs: it previously scanned
+/// `backends/`, which no longer exists, and passed while validating nothing.
+/// The count assertion at the end is what stops that recurring silently.
 #[test]
 fn accepts_every_in_repo_backend_toml() {
     let v = backend_validator();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap();
-    // Backends are migrating to their own repos, so the in-repo set shrinks
-    // over time (and `backends/` may eventually disappear) — validate whatever
-    // manifests remain rather than asserting a fixed count. The schema's
-    // acceptance of a valid manifest is also covered by the inline cases in
-    // `allows_documented_optionals` / `rejects_contract_violations`.
-    let Ok(dir) = std::fs::read_dir(root.join("backends")) else {
-        return;
-    };
-    for entry in dir.flatten() {
-        let path = entry.path().join("backend.toml");
-        if !path.exists() {
+        .unwrap()
+        .join("super-stt-daemon/tests/fixtures");
+    let entries = std::fs::read_dir(&dir).expect("daemon test fixtures directory");
+
+    let mut checked = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Only manifests: the `Cargo.toml`s of the mock backends live in
+        // subdirectories, so a non-recursive `*backend.toml` match skips them.
+        if !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with("backend.toml"))
+        {
             continue;
         }
         let doc = toml_to_json(&std::fs::read_to_string(&path).unwrap());
@@ -40,7 +47,70 @@ fn accepts_every_in_repo_backend_toml() {
             "{} schema errors: {errors:#?}",
             path.display()
         );
+        checked += 1;
     }
+
+    assert!(
+        checked > 0,
+        "no backend manifests found under {} — this test would pass while validating nothing",
+        dir.display()
+    );
+}
+
+/// The in-repo fixtures are the only manifests this crate can reach, so they
+/// are also the only thing keeping the shipped shape covered. Every published
+/// backend declares `provider` on its models; if no fixture does, the
+/// acceptance test above stops exercising the one key most likely to be
+/// dropped from the schema by accident.
+#[test]
+fn a_fixture_still_exercises_the_provider_key() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("super-stt-daemon/tests/fixtures");
+    let covered = std::fs::read_dir(&dir)
+        .expect("daemon test fixtures directory")
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.ends_with("backend.toml"))
+        })
+        .any(|e| {
+            toml_to_json(&std::fs::read_to_string(e.path()).unwrap())
+                .get("models")
+                .and_then(Value::as_array)
+                .is_some_and(|models| models.iter().any(|m| m.get("provider").is_some()))
+        });
+    assert!(
+        covered,
+        "no fixture under {} declares a model `provider` — the schema's tolerance of the \
+         key every published manifest carries is no longer covered",
+        dir.display()
+    );
+}
+
+/// `provider` is a legacy identity component every published `backend.toml`
+/// still declares. `ModelEntry` is closed (`additionalProperties: false`), so
+/// dropping the field from the type does not merely stop reading it — it
+/// makes the *published* schema reject manifests the daemon and indexer both
+/// accept, flagging an error in every backend author's editor.
+///
+/// This is the test that fails if the field is removed from `ModelEntry`
+/// before the shipped manifests have rolled over.
+#[test]
+fn the_schema_still_accepts_the_legacy_provider_key() {
+    let v = backend_validator();
+    let mut doc = wasm_base();
+    doc["models"] = json!([{ "name": "m",
+        "provider": "local_whisper",
+        "primary_language": "en", "supported_languages": ["en"],
+        "supported_devices": ["cpu"] }]);
+    let errors: Vec<String> = v.iter_errors(&doc).map(|e| format!("{e}")).collect();
+    assert!(
+        errors.is_empty(),
+        "schema rejects the `provider` every published backend.toml declares: {errors:#?}"
+    );
 }
 
 #[test]
@@ -117,18 +187,9 @@ fn rejects_contract_violations() {
             ]);
             d
         }),
-        ("malformed provider (not snake_case)", {
-            // The provider is free-form, but must be snake_case — uppercase is
-            // rejected by the pattern.
-            let mut d = wasm_base();
-            d["models"] = json!([{ "name": "m", "provider": "Anthropic",
-                "primary_language": "en", "supported_languages": ["en"],
-                "supported_devices": ["none"] }]);
-            d
-        }),
         ("file missing url", {
             let mut d = wasm_base();
-            d["models"] = json!([{ "name": "m", "provider": "openai",
+            d["models"] = json!([{ "name": "m",
                 "primary_language": "en", "supported_languages": ["en"],
                 "supported_devices": ["none"],
                 "files": [{ "destination": "models/m/config.json" }] }]);
@@ -136,7 +197,7 @@ fn rejects_contract_violations() {
         }),
         ("file missing destination", {
             let mut d = wasm_base();
-            d["models"] = json!([{ "name": "m", "provider": "openai",
+            d["models"] = json!([{ "name": "m",
                 "primary_language": "en", "supported_languages": ["en"],
                 "supported_devices": ["none"],
                 "files": [{ "url": "https://example.com/config.json" }] }]);
@@ -149,7 +210,7 @@ fn rejects_contract_violations() {
         }),
         ("model with empty supported_devices", {
             let mut d = wasm_base();
-            d["models"] = json!([{ "name": "m", "provider": "openai",
+            d["models"] = json!([{ "name": "m",
                 "primary_language": "en", "supported_languages": ["en"],
                 "supported_devices": [] }]);
             d
@@ -301,7 +362,7 @@ fn allows_documented_optionals() {
     assert!(v.is_valid(&wildcard), "wildcard cuda_sm must validate");
     // Model files: each entry is url + destination, with an optional sha256.
     let mut with_files = sub_base();
-    with_files["models"] = json!([{ "name": "m", "provider": "local_whisper",
+    with_files["models"] = json!([{ "name": "m",
         "primary_language": "en", "supported_languages": ["en"],
         "supported_devices": ["cpu"],
         "files": [

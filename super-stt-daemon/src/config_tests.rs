@@ -211,9 +211,10 @@ allow_online_models = true
 "#;
     let config: DaemonConfig =
         toml::from_str(toml_str).expect("legacy provider string should not fail the whole config");
-    assert_eq!(config.transcription.preferred_provider, Provider::default());
-    // `preferred_source` is a free-form string now — any value is accepted.
+    // Both are free-form strings now — any value is accepted, and the legacy
+    // provider is carried through rather than rejected or dropped.
     assert_eq!(config.transcription.preferred_source, "BadValue");
+    assert_eq!(config.transcription.preferred_provider, "LocalWhisper");
     // Other fields must survive the field-level fallback.
     assert_eq!(config.transcription.preferred_model, "whisper-tiny");
     assert!(config.transcription.preview_typing_enabled);
@@ -243,19 +244,10 @@ write_method = "auto"
 "#;
     let config: DaemonConfig = toml::from_str(toml_str).expect("should deserialize");
     assert_eq!(
-        config.transcription.preferred_provider,
-        Provider::from("local_voxtral")
-    );
-    assert_eq!(
         config.transcription.preferred_source,
         "github.com/super-stt/voxtral"
     );
-
-    let serialized = toml::to_string_pretty(&config).expect("should serialize");
-    assert!(
-        serialized.contains("preferred_provider = \"local_voxtral\""),
-        "serialized form: {serialized}"
-    );
+    assert_eq!(config.transcription.preferred_provider, "local_voxtral");
 }
 
 /// `transcription.active_backend` defaults to `None` (no backend selected
@@ -410,7 +402,6 @@ fn v0_1_3_full_daemon_config_loads_and_migrates() {
     assert_eq!(cfg.transcription.custom_models_dir, None);
 
     // New fields materialize at their defaults.
-    assert_eq!(cfg.transcription.preferred_provider, Provider::default());
     assert_eq!(cfg.transcription.preferred_source, "");
     assert_eq!(cfg.transcription.backends_dir, None);
     assert_eq!(cfg.transcription.active_backend, None);
@@ -528,4 +519,103 @@ fn all_published_daemon_configs_load_cleanly() {
         checked >= 4,
         "expected >= 4 daemon fixtures (v0.1.0-v0.1.3), found {checked}"
     );
+}
+
+/// The regression: `preferred_provider` used to be dropped from the struct, so
+/// the first save after an upgrade rewrote `daemon.toml` without it. Daemons
+/// through v0.2.0 resolve their startup model by `(model, provider, source)`,
+/// so a user rolling back after a bad upgrade got an idle daemon with their
+/// selection silently gone — and `daemon.toml` outlives the binary that wrote
+/// it, so nothing later can recover the value.
+#[test]
+fn a_save_preserves_preferred_provider() {
+    let toml_str = r#"
+[device]
+preferred_device = "cpu"
+
+[audio]
+theme = "classic"
+volume = 100
+
+[transcription]
+preferred_model = "voxtral-mini"
+preferred_provider = "local_voxtral"
+preferred_source = "github.com/super-stt/voxtral"
+write_mode = false
+preview_typing_enabled = false
+recording_stop_mode = "silence_and_manual"
+
+[online]
+allow_online_models = false
+"#;
+    let config: DaemonConfig = toml::from_str(toml_str).expect("fixture parses");
+    assert_eq!(config.transcription.preferred_provider, "local_voxtral");
+
+    let written = toml::to_string_pretty(&config).expect("serializes");
+    assert!(
+        written.contains("preferred_provider = \"local_voxtral\""),
+        "a save dropped `preferred_provider`; a rollback to v0.2.0 comes up idle:\n{written}"
+    );
+}
+
+/// Preserving the key is not enough on its own: a model switch under the new
+/// daemon must carry the newly-selected model's provider into it. A value left
+/// pointing at the *previous* model is exactly as unusable to a rolled-back
+/// v0.2.0 daemon as a missing one — it resolves nothing and the daemon idles.
+#[test]
+fn a_model_switch_updates_preferred_provider() {
+    let mut config = DaemonConfig::default();
+    config.update_preferred_model(
+        "voxtral-mini".to_string(),
+        "github.com/super-stt/voxtral".to_string(),
+        Some("local_voxtral".to_string()),
+    );
+    assert_eq!(config.transcription.preferred_provider, "local_voxtral");
+
+    // Switching to a model from another backend must not leave the old one.
+    config.update_preferred_model(
+        "whisper-tiny".to_string(),
+        "github.com/super-stt/whisper".to_string(),
+        Some("local_whisper".to_string()),
+    );
+    assert_eq!(config.transcription.preferred_provider, "local_whisper");
+
+    // A model whose manifest declares none clears it rather than keeping a
+    // provider that belongs to a different model.
+    config.update_preferred_model(
+        "nova-3".to_string(),
+        "github.com/super-stt/deepgram".to_string(),
+        None,
+    );
+    assert_eq!(config.transcription.preferred_provider, "");
+}
+
+/// Every path that drops the model preference drops the provider with it —
+/// otherwise the persisted triple names a model that is no longer selected.
+#[test]
+fn clearing_the_model_preference_clears_the_provider() {
+    let seeded = || {
+        let mut c = DaemonConfig::default();
+        c.update_preferred_model(
+            "voxtral-mini".to_string(),
+            "github.com/super-stt/voxtral".to_string(),
+            Some("local_voxtral".to_string()),
+        );
+        c
+    };
+
+    let mut c = seeded();
+    c.clear_preferred_model();
+    assert_eq!(c.transcription.preferred_provider, "");
+
+    let mut c = seeded();
+    c.update_active_backend("whisper".to_string());
+    assert_eq!(
+        c.transcription.preferred_provider, "",
+        "selecting a backend drops the model preference; the provider must go too"
+    );
+
+    let mut c = seeded();
+    c.clear_active_backend();
+    assert_eq!(c.transcription.preferred_provider, "");
 }

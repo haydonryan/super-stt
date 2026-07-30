@@ -93,7 +93,6 @@ mod tests {
     use crate::stt_models::transcribe::{ModelInfo, ModelInfoData, ModelState, Transcribe};
     use std::sync::Mutex;
     use std::time::Duration;
-    use super_stt_shared::models::provider::Provider;
 
     /// What the fake backend returns from `transcribe_audio`.
     #[derive(Clone)]
@@ -147,10 +146,8 @@ mod tests {
     fn loaded(online: bool, outcome: Outcome) -> Probes {
         let seen_language = Arc::new(Mutex::new(None));
         let seen_audio_len = Arc::new(Mutex::new(None));
-        let provider = Provider::from("local_whisper");
         let info = ModelInfoData::new(
             "fake",
-            provider.clone(),
             "github.com/x/y",
             true,
             online,
@@ -158,7 +155,6 @@ mod tests {
         );
         let definition = ModelDefinition {
             name: "fake".to_string(),
-            provider,
             source: "github.com/x/y".to_string(),
             is_multilingual: true,
             primary_language: "en".to_string(),
@@ -167,6 +163,7 @@ mod tests {
             processing_interval: Duration::from_secs(1),
             supported_devices: vec![super_stt_registry_types::manifest::Device::Cpu],
             realtime: false,
+            provider: None,
         };
         let instance = Box::new(FakeModel {
             info,

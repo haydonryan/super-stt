@@ -8,15 +8,8 @@ use crate::services::dbus::DBusManager;
 use crate::stt_models::backends::{self, DiscoveredBackend};
 use anyhow::Result;
 use std::sync::{Arc, RwLock};
-use super_stt_shared::models::provider::Provider;
 use super_stt_shared::theme::AudioTheme;
 use tokio::sync::broadcast;
-
-#[derive(Copy, Clone, Debug)]
-pub enum DeviceOverride {
-    Cpu,
-    Cuda,
-}
 
 /// Normalize a backend-reported device label to the short wire-name
 /// (`"cpu"` / `"cuda"` / `"metal"` / `"remote"`) used in
@@ -36,11 +29,11 @@ pub(crate) fn normalize_device(label: &str) -> String {
 }
 
 /// A live model: its full resolved [`ModelDefinition`] plus the running
-/// inference instance. Replaces what used to be parallel
-/// `Arc<RwLock<Option<…>>>` slots for name, provider, and instance — those
-/// always changed together and could drift during a switch. The definition
-/// owns the name, provider, source, and architecture; nothing has to be
-/// re-derived at read sites.
+/// inference instance. A single slot rather than parallel
+/// `Arc<RwLock<Option<…>>>` slots for the name, the definition, and the
+/// instance — those always changed together and could drift during a switch.
+/// The definition owns the model's identity and capabilities, so nothing has
+/// to be re-derived at read sites.
 pub struct LoadedModel {
     pub definition: crate::stt_models::ModelDefinition,
     pub instance: Box<dyn crate::stt_models::transcribe::Transcribe>,
@@ -88,8 +81,8 @@ pub struct SuperSTTDaemon {
     pub preview_text: PreviewSlot,
     // Backends discovered from the backends directory.
     pub backends: Arc<tokio::sync::RwLock<Vec<DiscoveredBackend>>>,
-    // Active backend: the relative install dir (subdir of the backends dir) of
-    // the selected provider, or None when idle. Runtime mirror of
+    // Active backend: the relative install dir (a subdir of the backends dir)
+    // of the selected backend, or None when idle. Runtime mirror of
     // `config.transcription.active_backend`.
     pub active_backend: Arc<tokio::sync::RwLock<Option<String>>>,
 }
@@ -127,16 +120,15 @@ pub(crate) async fn test_daemon() -> SuperSTTDaemon {
 }
 
 impl SuperSTTDaemon {
-    /// Resolve a wire-level `(name, provider, source)` triple into a
-    /// [`ModelDefinition`] from the discovered backends. Returns `None` on miss.
+    /// Resolve a wire-level `(name, source)` pair into a [`ModelDefinition`]
+    /// from the discovered backends. Returns `None` on miss.
     pub async fn resolve_definition(
         &self,
         name: &str,
-        provider: &Provider,
         source: &str,
     ) -> Option<crate::stt_models::ModelDefinition> {
         let backends = self.backends.read().await;
-        backends::find_model(&backends, name, provider, source).map(|(_, def)| def.clone())
+        backends::find_model(&backends, name, source).map(|(_, def)| def.clone())
     }
 
     /// Set the audio theme

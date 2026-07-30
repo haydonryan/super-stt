@@ -268,13 +268,12 @@ websocket = true
 ## `[[models]]`
 
 One entry per model the backend provides. Each model is identified on the
-wire by `(name, provider, source)`, where `source` is the `[backend].source`
+wire by `(name, source)`, where `source` is the `[backend].source`
 above.
 
 ```toml
 [[models]]
 name                   = "whisper-tiny"
-provider               = "local_whisper"
 multilingual           = true
 primary_language       = "en"
 supported_languages    = ["en", "es", "fr", "de", "zh"]  # abbreviated
@@ -286,7 +285,6 @@ processing_interval_ms = 1000
 | Field                    | Type            | Required | Notes                                                            |
 |--------------------------|-----------------|----------|------------------------------------------------------------------|
 | `name`                   | string          | yes      | Wire model name.                                                 |
-| `provider`               | string          | yes      | Free-form `snake_case` engine identifier (`[a-z][a-z0-9_]*`), e.g. `local_whisper`, `openai`, `groq`. Any backend may define its own — it is an identity label, not a fixed set. Whether a model is online/remote is determined by `supported_devices` (the `none` sentinel), **not** by this value. |
 | `multilingual`           | bool            | no       | Whether the model accepts more than one language. Default `true`. When `true`, `POST /v1/transcribe` accepts a `language` from `supported_languages`. |
 | `primary_language`       | string          | yes      | Default language code (e.g. `en`); used when `language` is omitted. |
 | `supported_languages`    | array of string | yes      | Language codes the model accepts; must include `primary_language`. When `multilingual` is `false`, it is exactly `[primary_language]`. |
@@ -294,6 +292,14 @@ processing_interval_ms = 1000
 | `estimated_vram_bytes`   | integer         | no       | Conservative GPU memory estimate. Default `0`; use `0` for cloud models. |
 | `processing_interval_ms` | integer         | no       | Suggested minimum interval between streaming passes, in ms.      |
 | `realtime`               | bool            | no       | When `true`, the model is driven over the consumer-facing WebSocket endpoint (`GET /v1/transcribe/realtime`) rather than batch `POST /v1/transcribe`. Requires `[capabilities] websocket = true`. Default `false`. |
+| `provider`               | string          | no       | Compatibility field. Not part of model identity and read by nothing in the daemon; it is echoed back verbatim as `provider` in [`POST /v1/load`](./contract.md#post-v1load) so a backend that still validates it keeps loading. |
+
+> **Compatibility.** `provider` was part of model identity before it became
+> `(name, source)`. Backends released against the earlier contract compare the
+> `provider` in `POST /v1/load` against their own fixed value and answer
+> `400 invalid_model` on a mismatch, so a manifest declaring `provider` still
+> has it forwarded on load. New backends should omit it, and should not
+> validate it if they accept it.
 
 `multilingual`, `primary_language`, and `supported_languages` together
 describe language capability. When `multilingual` is `true`,
@@ -365,7 +371,6 @@ allowed_hosts = []
 
 [[models]]
 name                   = "whisper-tiny"
-provider               = "local_whisper"
 multilingual           = true
 primary_language       = "en"
 supported_languages    = ["en", "es", "fr", "de", "zh"]  # abbreviated
@@ -383,7 +388,6 @@ files = [
 
 [[models]]
 name                   = "voxtral-mini"
-provider               = "local_voxtral"
 multilingual           = true
 primary_language       = "en"
 supported_languages    = ["en", "es", "fr", "de", "zh"]  # abbreviated
@@ -437,7 +441,6 @@ default     = "https://api.openai.com"
 
 [[models]]
 name                = "whisper-1"
-provider            = "openai"
 multilingual        = true
 primary_language    = "en"
 supported_languages = ["en", "es", "fr", "de", "zh"]  # abbreviated
@@ -445,7 +448,6 @@ supported_devices   = ["none"]
 
 [[models]]
 name                = "gpt-4o-transcribe"
-provider            = "openai"
 multilingual        = true
 primary_language    = "en"
 supported_languages = ["en", "es", "fr", "de", "zh"]  # abbreviated
@@ -458,10 +460,8 @@ supported_devices   = ["none"]
   **snake_case**; unknown values are rejected and a backend whose
   configuration fails validation is skipped during discovery rather than
   loaded with defaults.
-- `provider` is a free-form **snake_case** identifier (`[a-z][a-z0-9_]*`): any
-  value is accepted, but a malformed one (uppercase, hyphens, leading digit) is
-  rejected. It is an identity label only — online/remote is decided by
-  `supported_devices` (`none`), not by the provider.
+- Whether a model is online/remote is decided solely by `supported_devices`
+  (the `none` sentinel).
 - Secret and option `name`s are **snake_case** identifiers matching
   `[a-z][a-z0-9_]*` (e.g. `openai_api_key`, `base_url`), unique within their
   table. The `name` is the wire identifier the backend reads the value by;
