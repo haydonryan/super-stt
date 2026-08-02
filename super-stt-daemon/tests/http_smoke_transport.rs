@@ -67,30 +67,31 @@ async fn start_daemon() -> (DaemonGuard, PathBuf) {
         .spawn()
         .expect("spawn super-stt-daemon");
 
-    let deadline = Instant::now() + Duration::from_secs(120);
+    // Hand the child to the guard before the readiness loop: the timeout
+    // panic below must still kill and reap the daemon, not leak it.
+    let guard = DaemonGuard {
+        child,
+        cleanup_paths: vec![http_socket.clone(), config_home, data_home],
+    };
+
+    let deadline = Instant::now() + Duration::from_mins(2);
     while Instant::now() < deadline {
         if Path::new(&http_socket).exists()
             && http_client::auth_request(http_socket.clone(), "transport-smoke", &["status"])
                 .await
                 .is_ok()
         {
-            return (
-                DaemonGuard {
-                    child,
-                    cleanup_paths: vec![http_socket.clone(), config_home, data_home],
-                },
-                http_socket,
-            );
+            return (guard, http_socket);
         }
         sleep(Duration::from_millis(200)).await;
     }
     panic!("daemon HTTP listener not ready within 120s");
 }
 
-/// Low-level request: any method/path, optional bearer token, optional body
-/// + content-type. Returns `(status, raw body bytes)` — callers parse JSON
-/// only when the response is expected to carry the daemon's error shape
-/// (404/405 bodies are empty or framework-generated text).
+/// Low-level request: any method/path, optional bearer token, optional
+/// body + content-type. Returns `(status, raw body bytes)` — callers parse
+/// JSON only when the response is expected to carry the daemon's error
+/// shape (404/405 bodies are empty or framework-generated text).
 async fn send(
     sock: &PathBuf,
     method: Method,

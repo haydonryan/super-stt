@@ -79,20 +79,21 @@ async fn start_daemon_with_registry(registry_url: &str) -> (DaemonGuard, PathBuf
         .spawn()
         .expect("spawn super-stt-daemon");
 
-    let deadline = Instant::now() + Duration::from_secs(120);
+    // Hand the child to the guard before the readiness loop: the timeout
+    // panic below must still kill and reap the daemon, not leak it.
+    let guard = DaemonGuard {
+        child,
+        cleanup_paths: vec![http_socket.clone()],
+    };
+
+    let deadline = Instant::now() + Duration::from_mins(2);
     while Instant::now() < deadline {
         if Path::new(&http_socket).exists()
             && http_client::auth_request(http_socket.clone(), "registry-test", &["settings"])
                 .await
                 .is_ok()
         {
-            return (
-                DaemonGuard {
-                    child,
-                    cleanup_paths: vec![http_socket.clone()],
-                },
-                http_socket,
-            );
+            return (guard, http_socket);
         }
         sleep(Duration::from_millis(200)).await;
     }
@@ -229,10 +230,10 @@ fn extract_sse_data_for_event(raw: &[u8], event_name: &str) -> Vec<String> {
                 cur_data = Some(rest.trim());
             }
         }
-        if cur_event == Some(event_name) {
-            if let Some(d) = cur_data {
-                out.push(d.to_owned());
-            }
+        if cur_event == Some(event_name)
+            && let Some(d) = cur_data
+        {
+            out.push(d.to_owned());
         }
     }
     out

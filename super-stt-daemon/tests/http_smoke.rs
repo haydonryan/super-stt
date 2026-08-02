@@ -82,7 +82,14 @@ async fn start_daemon() -> (DaemonGuard, PathBuf) {
         .spawn()
         .expect("spawn super-stt-daemon");
 
-    let deadline = Instant::now() + Duration::from_secs(120);
+    // Hand the child to the guard before the readiness loop: the timeout
+    // panic below must still kill and reap the daemon, not leak it.
+    let guard = DaemonGuard {
+        child,
+        xdg_runtime_dir: xdg,
+    };
+
+    let deadline = Instant::now() + Duration::from_mins(2);
     while Instant::now() < deadline {
         if Path::new(&http_socket).exists() {
             // Try minting a token to confirm the HTTP listener is fully alive.
@@ -90,13 +97,7 @@ async fn start_daemon() -> (DaemonGuard, PathBuf) {
                 .await
                 .is_ok()
             {
-                return (
-                    DaemonGuard {
-                        child,
-                        xdg_runtime_dir: xdg,
-                    },
-                    http_socket,
-                );
+                return (guard, http_socket);
             }
         }
         sleep(Duration::from_millis(200)).await;
@@ -241,7 +242,7 @@ async fn http_endpoints_respond() {
 /// second press hits the stop endpoint and must NOT start a fresh
 /// recording.
 ///
-/// Regression for the daemon refactor where transcribe_stop was
+/// Regression for the daemon refactor where `transcribe_stop` was
 /// briefly dispatching `record` unconditionally — which would START
 /// a recording when called against an idle daemon.
 #[tokio::test]
@@ -303,7 +304,7 @@ async fn transcribe_stop_idempotent_when_idle() {
 /// We can't reliably exercise the recording pipeline in CI (no audio
 /// device, no display server), so the assertion is the
 /// negative-space property: both calls must surface a well-formed
-/// outcome — either success/error DaemonResponse, or
+/// outcome — either success/error `DaemonResponse`, or
 /// `HttpError::Other("recording_in_progress")` — and never the
 /// broken-stream message.
 #[tokio::test]

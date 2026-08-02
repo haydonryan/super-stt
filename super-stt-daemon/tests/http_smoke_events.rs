@@ -79,20 +79,21 @@ async fn start_daemon() -> (DaemonGuard, PathBuf) {
         .spawn()
         .expect("spawn super-stt-daemon");
 
-    let deadline = Instant::now() + Duration::from_secs(120);
+    // Hand the child to the guard before the readiness loop: the timeout
+    // panic below must still kill and reap the daemon, not leak it.
+    let guard = DaemonGuard {
+        child,
+        cleanup_paths: vec![http_socket.clone(), config_home, data_home],
+    };
+
+    let deadline = Instant::now() + Duration::from_mins(2);
     while Instant::now() < deadline {
         if Path::new(&http_socket).exists()
             && http_client::auth_request(http_socket.clone(), "events-smoke", &["status"])
                 .await
                 .is_ok()
         {
-            return (
-                DaemonGuard {
-                    child,
-                    cleanup_paths: vec![http_socket.clone(), config_home, data_home],
-                },
-                http_socket,
-            );
+            return (guard, http_socket);
         }
         sleep(Duration::from_millis(200)).await;
     }
@@ -100,8 +101,8 @@ async fn start_daemon() -> (DaemonGuard, PathBuf) {
 }
 
 /// Mint a token with the given scopes via the (auto-approved) consent flow.
-async fn mint(sock: &PathBuf, scopes: &[&str]) -> String {
-    http_client::auth_request(sock.clone(), "events scope smoke", scopes)
+async fn mint(sock: &Path, scopes: &[&str]) -> String {
+    http_client::auth_request(sock.to_path_buf(), "events scope smoke", scopes)
         .await
         .expect("auth_request")
         .session_token
