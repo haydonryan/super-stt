@@ -46,7 +46,17 @@ impl WasiHttpView for Host {
 /// implements here — so a request to a host outside the allowlist never
 /// leaves the machine.
 pub struct AllowlistHooks {
+    /// Hosts pinned by the backend's own (unreviewed) `[network].allowed_hosts`
+    /// manifest. These are SSRF-guarded: a manifest entry does **not** authorize
+    /// loopback/private/link-local/metadata destinations, because the backend
+    /// author is not a trusted operator.
     pub allowed_hosts: Vec<String>,
+    /// Hosts the *user* authorized through backend options (e.g. a `base_url`
+    /// set in the settings UI). These are exempt from the SSRF guard — the
+    /// component cannot self-authorize them (options are user-writable only), so
+    /// user intent to reach a local/private gateway is honored. Anything not in
+    /// this set keeps the full allowlist + SSRF enforcement.
+    pub user_allowed_hosts: Vec<String>,
     /// Permit egress to loopback addresses (`127.0.0.0/8`, `::1`). Off in
     /// production — the SSRF guard blocks loopback so an untrusted backend
     /// can't reach a service bound to localhost. Tests and local development
@@ -87,8 +97,13 @@ impl WasiHttpHooks for AllowlistHooks {
                 } else {
                     443
                 });
-        if let Err(msg) = check_host_allowed(&self.allowed_hosts, &host, port, self.allow_loopback)
-        {
+        if let Err(msg) = check_host_allowed(
+            &self.allowed_hosts,
+            &self.user_allowed_hosts,
+            &host,
+            port,
+            self.allow_loopback,
+        ) {
             return Err(ErrorCode::InternalError(Some(msg)).into());
         }
 
@@ -96,31 +111,45 @@ impl WasiHttpHooks for AllowlistHooks {
     }
 }
 
-/// Confines an outbound connection to the backend's `allowed_hosts` and runs
-/// the SSRF resolver guard. Shared by the HTTP hook and the `ws` host so both
-/// transports enforce identical egress rules.
+/// Confines an outbound connection to the backend's `allowed_hosts` — plus any
+/// `user_allowed` hosts — and runs the SSRF resolver guard. Shared by the HTTP
+/// hook and the `ws` host so both transports enforce identical egress rules.
 ///
 /// `host` is the bare hostname or IP literal; `port` is the resolved port.
 /// `allowed` entries may be either a bare host or a `host:port` authority.
+/// Entries in `user_allowed` may too, but a match there skips the SSRF guard
+/// (see [`AllowlistHooks::user_allowed_hosts`]).
 ///
 /// # Errors
-/// Returns a human-readable reason when the host is not on the allowlist or a
-/// hostname resolves to a loopback/private/link-local/unspecified address.
+/// Returns a human-readable reason when the host is on neither list, or when a
+/// manifest-allowlisted hostname resolves to a
+/// loopback/private/link-local/unspecified address.
 pub(crate) fn check_host_allowed(
     allowed: &[String],
+    user_allowed: &[String],
     host: &str,
     port: u16,
     allow_loopback: bool,
 ) -> Result<(), String> {
     let authority = format!("{host}:{port}");
-    let on_allowlist = allowed
+    let on_manifest = allowed
         .iter()
         .any(|a| a.as_str() == host || a.as_str() == authority);
-    if !on_allowlist {
-        return Err(format!("outbound host not allowed: {host}"));
+    if on_manifest {
+        return guard_egress_host(host, port, allow_loopback);
     }
-
-    guard_egress_host(host, port, allow_loopback)
+    // A host the *user* authorized via a backend option is exempt from the SSRF
+    // guard. Unlike manifest `allowed_hosts` — written by the untrusted backend
+    // author, who therefore cannot self-authorize a metadata/localhost target —
+    // this list is user intent: the daemon reads these from options set through
+    // the settings-scoped API, never from the component.
+    let on_user = user_allowed
+        .iter()
+        .any(|a| a.as_str() == host || a.as_str() == authority);
+    if on_user {
+        return Ok(());
+    }
+    Err(format!("outbound host not allowed: {host}"))
 }
 
 /// Reject an outbound target that points at an address a sandboxed backend must
@@ -222,19 +251,19 @@ mod tests {
     fn ip_literal_metadata_on_allowlist_is_still_rejected() {
         // A backend cannot self-authorize the metadata endpoint by listing it.
         let allow = vec!["169.254.169.254".to_string()];
-        assert!(check_host_allowed(&allow, "169.254.169.254", 80, false).is_err());
+        assert!(check_host_allowed(&allow, &[], "169.254.169.254", 80, false).is_err());
     }
 
     #[test]
     fn public_ip_literal_on_allowlist_is_permitted() {
         let allow = vec!["93.184.216.34".to_string()];
-        assert!(check_host_allowed(&allow, "93.184.216.34", 443, false).is_ok());
+        assert!(check_host_allowed(&allow, &[], "93.184.216.34", 443, false).is_ok());
     }
 
     #[test]
     fn host_not_on_allowlist_is_rejected() {
         let allow = vec!["api.example.com".to_string()];
-        assert!(check_host_allowed(&allow, "169.254.169.254", 80, false).is_err());
+        assert!(check_host_allowed(&allow, &[], "169.254.169.254", 80, false).is_err());
     }
 
     #[test]
@@ -245,18 +274,72 @@ mod tests {
         // `ws` host now route through `check_host_allowed`, so `["h:443"]` behaves
         // identically for `https://h/` and `wss://h/`. Loopback avoids real DNS.
         let allow = vec!["127.0.0.1:443".to_string()];
-        assert!(check_host_allowed(&allow, "127.0.0.1", 443, true).is_ok());
+        assert!(check_host_allowed(&allow, &[], "127.0.0.1", 443, true).is_ok());
     }
 
     #[test]
     fn loopback_blocked_by_default_opt_in_permits_only_loopback() {
         let allow = vec!["127.0.0.1:8088".to_string()];
         // Default: loopback egress is refused even when allowlisted (SSRF).
-        assert!(check_host_allowed(&allow, "127.0.0.1", 8088, false).is_err());
+        assert!(check_host_allowed(&allow, &[], "127.0.0.1", 8088, false).is_err());
         // Opt-in (tests / local mock upstream): loopback is permitted.
-        assert!(check_host_allowed(&allow, "127.0.0.1", 8088, true).is_ok());
+        assert!(check_host_allowed(&allow, &[], "127.0.0.1", 8088, true).is_ok());
         // The opt-in relaxes loopback ONLY — metadata stays blocked.
         let meta = vec!["169.254.169.254".to_string()];
-        assert!(check_host_allowed(&meta, "169.254.169.254", 80, true).is_err());
+        assert!(check_host_allowed(&meta, &[], "169.254.169.254", 80, true).is_err());
+    }
+
+    #[test]
+    fn user_allowed_loopback_passes_without_loopback_opt_in() {
+        // A host the user authorized via a backend option (e.g. a base_url set in
+        // the settings UI) is exempt from the SSRF guard — no loopback opt-in.
+        let user = vec!["127.0.0.1".to_string()];
+        assert!(check_host_allowed(&[], &user, "127.0.0.1", 8088, false).is_ok());
+    }
+
+    #[test]
+    fn user_allowed_metadata_is_permitted_by_user_intent() {
+        // The SSRF exception is user intent: the component cannot self-authorize
+        // this (options are user-writable only), so a user-chosen destination is
+        // honored even for the metadata address.
+        let user = vec!["169.254.169.254".to_string()];
+        assert!(check_host_allowed(&[], &user, "169.254.169.254", 80, false).is_ok());
+    }
+
+    #[test]
+    fn user_allowed_private_host_is_permitted() {
+        let user = vec!["10.0.0.5".to_string()];
+        assert!(check_host_allowed(&[], &user, "10.0.0.5", 8443, false).is_ok());
+        let user6 = vec!["fd12:3456::1".to_string()];
+        assert!(check_host_allowed(&[], &user6, "fd12:3456::1", 8443, false).is_ok());
+    }
+
+    #[test]
+    fn user_allowed_matches_bare_host_across_ports() {
+        // A user-authorized bare host authorizes any port (same authority
+        // matching rules as the manifest allowlist).
+        let user = vec!["gw.example.com".to_string()];
+        assert!(check_host_allowed(&[], &user, "gw.example.com", 443, false).is_ok());
+        assert!(check_host_allowed(&[], &user, "gw.example.com", 8443, false).is_ok());
+    }
+
+    #[test]
+    fn user_allowed_does_not_loosen_other_hosts() {
+        // Only hosts in `user_allowed` are exempt; a different disallowed target
+        // is still refused even while a user host is present.
+        let user = vec!["gw.example.com".to_string()];
+        assert!(check_host_allowed(&[], &user, "169.254.169.254", 80, false).is_err());
+        assert!(check_host_allowed(&[], &user, "api.openai.com", 443, false).is_err());
+    }
+
+    #[test]
+    fn manifest_host_still_ssrf_guarded_alongside_user_host() {
+        // The manifest allowlist stays SSRF-guarded even when a user host is
+        // present: loopback/private via the manifest is refused, while the user
+        // host passes.
+        let allow = vec!["10.0.0.9".to_string()];
+        let user = vec!["gw.example.com".to_string()];
+        assert!(check_host_allowed(&allow, &user, "10.0.0.9", 443, false).is_err());
+        assert!(check_host_allowed(&allow, &user, "gw.example.com", 443, false).is_ok());
     }
 }

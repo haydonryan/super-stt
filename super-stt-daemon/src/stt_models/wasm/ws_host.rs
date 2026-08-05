@@ -140,9 +140,11 @@ impl self::super_stt::realtime::ws::Host for Host {
             _ => 443,
         });
 
-        // Same egress allowlist + SSRF guard the HTTP host enforces.
+        // Same egress allowlist + SSRF guard the HTTP host enforces, including
+        // the user-authorized `base_url` exception.
         if let Err(msg) = check_host_allowed(
             &self.hooks.allowed_hosts,
+            &self.hooks.user_allowed_hosts,
             host,
             port,
             self.hooks.allow_loopback,
