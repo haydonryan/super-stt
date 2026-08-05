@@ -131,6 +131,12 @@ For both, `POST` sets a value and `DELETE` resets it to its default — the
 manifest default for an option, the unset state for a secret. `GET` on a secret
 reports only whether it is configured; `GET` on an option returns its value.
 
+Setting an option named `base_url` additionally authorizes that host for the
+backend's network egress (with an SSRF exception) on its next model load — see
+[config.md — `base_url` and egress](../../../backend/config.md#base_url-and-egress).
+This is how a cloud backend is pointed at an alternate endpoint (a gateway,
+proxy, or local OpenAI-compatible server) without re-installing it.
+
 ## DELETE /backends/{source}
 
 Uninstalls a backend. Works for any installed backend — registry-installed,

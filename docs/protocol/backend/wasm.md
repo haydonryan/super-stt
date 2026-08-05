@@ -47,6 +47,16 @@ which the daemon implements. The daemon enforces the configuration's
 
 A backend with an empty `allowed_hosts` has no network at all.
 
+**User-authorized egress (`base_url`).** A backend that declares an option
+named `base_url` (see [config.md — `base_url` and egress](./config.md#base_url-and-egress))
+lets the user point it at an arbitrary gateway. At model-load time the daemon
+adds the effective `base_url`'s host to the backend's egress set **and** exempts
+that host from the SSRF guard — so a user-set gateway may be on localhost or a
+private network. Only hosts the *user* configured through the settings-scoped
+API get this exception: options are never writable by the component, so a
+malicious backend still cannot self-authorize the metadata endpoint or a
+localhost service. Manifest `allowed_hosts` entries remain SSRF-guarded.
+
 ## Secrets and options
 
 The active model (`x-stt-model`) and the secrets and options a backend

@@ -46,6 +46,9 @@ pub struct WasmBackend {
     engine: Engine,
     pre: BackendPre,
     allowed_hosts: Vec<String>,
+    /// Hosts the *user* authorized via backend options (e.g. a `base_url` set in
+    /// the settings UI). Exempt from the SSRF guard — see [`AllowlistHooks`].
+    user_allowed_hosts: Vec<String>,
     allow_loopback: bool,
     transcribe_headers: Vec<(String, String)>,
     model_id: String,
@@ -60,11 +63,16 @@ impl WasmBackend {
     /// Load a component for a discovered model. The transcribe headers are the
     /// already-formed `x-stt-secret-*` / `x-stt-option-*` pairs to inject.
     ///
+    /// `allowed_hosts` are the backend's manifest-pinned `[network].allowed_hosts`
+    /// (SSRF-guarded); `user_allowed_hosts` are hosts the user authorized via
+    /// backend options (e.g. a `base_url`) and are exempt from the SSRF guard.
+    ///
     /// # Errors
     /// Returns an error if the component cannot be loaded or linked.
     pub fn with_info(
         component_path: &Path,
         allowed_hosts: Vec<String>,
+        user_allowed_hosts: Vec<String>,
         info: ModelInfoData,
         transcribe_headers: Vec<(String, String)>,
         websocket_capability: bool,
@@ -102,6 +110,7 @@ impl WasmBackend {
             engine,
             pre,
             allowed_hosts,
+            user_allowed_hosts,
             allow_loopback: false,
             transcribe_headers,
             model_id,
@@ -154,6 +163,7 @@ impl WasmBackend {
         Self::with_info(
             component_path,
             allowed_hosts,
+            Vec::new(),
             info,
             transcribe_headers,
             false,
@@ -184,6 +194,7 @@ impl WasmBackend {
         Self::with_info(
             component_path,
             allowed_hosts,
+            Vec::new(),
             info,
             transcribe_headers,
             true,
@@ -235,6 +246,7 @@ impl WasmBackend {
             http: WasiHttpCtx::new(),
             hooks: AllowlistHooks {
                 allowed_hosts: self.allowed_hosts.clone(),
+                user_allowed_hosts: self.user_allowed_hosts.clone(),
                 allow_loopback: self.allow_loopback,
             },
         };
@@ -451,6 +463,7 @@ impl Transcribe for WasmBackend {
             http: WasiHttpCtx::new(),
             hooks: AllowlistHooks {
                 allowed_hosts: self.allowed_hosts.clone(),
+                user_allowed_hosts: self.user_allowed_hosts.clone(),
                 allow_loopback: self.allow_loopback,
             },
         };

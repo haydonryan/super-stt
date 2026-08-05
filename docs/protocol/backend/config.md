@@ -155,6 +155,25 @@ default     = 30
 | `default`     | matches `type` | no       | Value used when the user sets none.                    |
 | `required`    | bool           | no       | Whether a value must be set before the backend can load. Default `false`. |
 
+#### `base_url` and egress
+
+An option named `base_url` is the convention for a backend's configurable
+endpoint. When the user sets one, the daemon treats its host as
+**user-authorized egress** for the backend: it is added to the WASM transport's
+`allowed_hosts` at model-load time *and* exempt from the SSRF resolver guard
+(see [wasm.md — Network egress](./wasm.md#network-egress)). This lets a cloud
+backend be pointed at an arbitrary gateway — public, local, or on a private
+network — without re-installing the backend. The host is derived from the
+effective value (config override → manifest default) and must be in origin
+form (`host` or `host:port`, scheme optional); a value carrying a path is
+treated as its bare host.
+
+The exemption is safe because options are **user-writable only**: the daemon
+reads them from config set through the settings-scoped API, never from the
+(untrusted) backend, so a component cannot self-authorize a metadata endpoint
+or localhost target. Manifest-declared `[network].allowed_hosts` entries remain
+SSRF-guarded.
+
 Both secrets and options reach the backend the same way — injected request
 headers on every `/v1` request — and differ only in how the daemon stores
 them at rest. See [request headers](./contract.md#request-headers).
