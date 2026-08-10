@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-10T00:57:26Z",
+  "generated_at": "2026-08-10T07:09:57Z",
   "min_client": "0.1.0",
   "backends": [
     {
@@ -392,6 +392,12 @@
             "sha256": "4520713a62c950cd305475d03e544c2fca8cc4a34acc08976130b9b0b81506f1"
           }
         ]
+      },
+      "index_stale": {
+        "latest_attempted": "0.1.0",
+        "tag": "v0.1.0",
+        "error": "error sending request for url (https://github.com/jorge-menjivar/super-stt-voxtral/releases/download/v0.1.0/backend.toml): client error (SendRequest): connection closed before message completed",
+        "since": "2026-08-10T07:09:57Z"
       },
       "manifest": {
         "url": "https://github.com/jorge-menjivar/super-stt-voxtral/releases/download/v0.1.0/backend.toml",
