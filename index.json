@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-13T01:04:40Z",
+  "generated_at": "2026-08-13T07:12:28Z",
   "min_client": "0.1.0",
   "backends": [
     {
@@ -43,12 +43,6 @@
           "size": 208325,
           "sha256": "3f00db3c6dd7fd2a67a865df4c2ac259d62eefe8e02971f23ce99ad24758dc6d"
         }
-      },
-      "index_stale": {
-        "latest_attempted": "0.1.0",
-        "tag": "v0.1.0",
-        "error": "error sending request for url (https://github.com/jorge-menjivar/super-stt-deepgram/releases/download/v0.1.0/backend.toml): client error (SendRequest): connection closed before message completed",
-        "since": "2026-08-13T01:04:40Z"
       },
       "manifest": {
         "url": "https://github.com/jorge-menjivar/super-stt-deepgram/releases/download/v0.1.0/backend.toml",
