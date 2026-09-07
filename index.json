@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-07T11:02:10Z",
+  "generated_at": "2026-09-07T16:51:12Z",
   "min_client": "0.1.0",
   "backends": [
     {
@@ -633,6 +633,12 @@
             "sha256": "5ee239b2c6a34531320182ac5fa5b0f55f6724c5bebca535e1c5f93d366554d5"
           }
         ]
+      },
+      "index_stale": {
+        "latest_attempted": "0.1.1",
+        "tag": "v0.1.1",
+        "error": "TOML parse error: TOML parse error at line 12, column 17\n   |\n12 |   contract    = \"v2\"\n   |                 ^^^^\nunknown variant `v2`, expected `v1`\n",
+        "since": "2026-09-07T16:51:12Z"
       },
       "manifest": {
         "url": "https://github.com/jorge-menjivar/super-stt-whisper/releases/download/v0.1.0/backend.toml",
