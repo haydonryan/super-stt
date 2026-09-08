@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-07T20:55:20Z",
+  "generated_at": "2026-09-08T02:02:06Z",
   "min_client": "0.1.0",
   "backends": [
     {
@@ -98,6 +98,12 @@
           "sha256": "da4c97fa2f1a0b1dbe8c787163efd34dd3bbd09a8f1267b98ae78145d19dc0fe"
         }
       },
+      "index_stale": {
+        "latest_attempted": "0.1.1",
+        "tag": "v0.1.1",
+        "error": "TOML parse error: TOML parse error at line 12, column 17\n   |\n12 |   contract    = \"v2\"\n   |                 ^^^^\nunknown variant `v2`, expected `v1`\n",
+        "since": "2026-09-08T02:02:06Z"
+      },
       "manifest": {
         "url": "https://github.com/jorge-menjivar/super-stt-mistral/releases/download/v0.1.0/backend.toml",
         "size": 1308,
@@ -176,6 +182,12 @@
           "size": 220917,
           "sha256": "c6a85f1cdb437ea933cb6ebcc9a82eb6740519276103de3ae8cb999392d9bbb1"
         }
+      },
+      "index_stale": {
+        "latest_attempted": "0.1.2",
+        "tag": "v0.1.2",
+        "error": "TOML parse error: TOML parse error at line 12, column 17\n   |\n12 |   contract    = \"v2\"\n   |                 ^^^^\nunknown variant `v2`, expected `v1`\n",
+        "since": "2026-09-08T02:02:06Z"
       },
       "manifest": {
         "url": "https://github.com/jorge-menjivar/super-stt-openai/releases/download/v0.1.1/backend.toml",
