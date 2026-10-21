@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-10-21T16:18:17Z",
+  "generated_at": "2026-10-21T21:02:09Z",
   "min_client": "0.1.0",
   "backends": [
     {
@@ -112,6 +112,12 @@
             ]
           }
         ]
+      },
+      "index_stale": {
+        "latest_attempted": "0.1.1",
+        "tag": "v0.1.1",
+        "error": "TOML parse error: TOML parse error at line 12, column 16\n   |\n12 |     contract = \"v3\"\n   |                ^^^^\nunknown variant `v3`, expected `v1`\n",
+        "since": "2026-10-21T21:02:09Z"
       },
       "manifest": {
         "url": "https://github.com/jorge-menjivar/super-stt-qwen-asr/releases/download/v0.1.0/backend.toml",
