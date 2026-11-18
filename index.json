@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-11-18T14:47:55Z",
+  "generated_at": "2026-11-18T23:42:33Z",
   "min_client": "0.1.0",
   "backends": [
     {
       "id": "deepgram",
       "source": "github.com/jorge-menjivar/super-stt-deepgram",
-      "version": "0.2.0",
-      "tag": "v0.2.0",
+      "version": "0.2.1",
+      "tag": "v0.2.1",
       "name": "Deepgram",
       "description": "Cloud speech-to-text via the Deepgram API.",
       "license": "GPL-3.0-only",
@@ -39,15 +39,15 @@
       "options": [],
       "assets": {
         "wasm": {
-          "url": "https://github.com/super-libre/super-voice-deepgram/releases/download/v0.2.0/deepgram.wasm",
-          "size": 270751,
-          "sha256": "828428a8a0aed772e27725160d9d7954205fe6c12147925e0d4dbf75363209fb"
+          "url": "https://github.com/super-libre/super-voice-deepgram/releases/download/v0.2.1/deepgram.wasm",
+          "size": 281616,
+          "sha256": "2aed1952db92542ec66434448cc1cabaa1b6f27e81046e36b42f8043a67f8ee2"
         }
       },
       "manifest": {
-        "url": "https://github.com/super-libre/super-voice-deepgram/releases/download/v0.2.0/backend.toml",
-        "size": 2878,
-        "sha256": "e40e010aa25bf78f48dcf3423971238cded06bdb12bad3a5a7bb03b8fadea00a"
+        "url": "https://github.com/super-libre/super-voice-deepgram/releases/download/v0.2.1/backend.toml",
+        "size": 2853,
+        "sha256": "207ba8fbf973962448aeeeda26182b3475290940af52d8c8989b176ba8a25e0d"
       }
     },
     {
@@ -285,8 +285,8 @@
         ]
       },
       "index_stale": {
-        "latest_attempted": "0.2.0",
-        "tag": "v0.2.0",
+        "latest_attempted": "0.2.1",
+        "tag": "v0.2.1",
         "error": "TOML parse error: TOML parse error at line 18, column 16\n   |\n18 |     contract = \"v4\"\n   |                ^^^^\nunknown variant `v4`, expected `v1`\n",
         "since": "2026-11-11T13:11:51Z"
       },
